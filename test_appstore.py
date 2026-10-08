@@ -37,6 +37,15 @@ class Tests(unittest.TestCase):
         app.save_state(state)
         return folder
 
+    def test_sort_apps(self):
+        rows = [{'name': 'Beta', 'repo': {'pushed_at': '2026-01-02T00:00:00Z'}},
+                {'name': 'alpha', 'repo': {'pushed_at': '2026-03-01T00:00:00Z'}},
+                {'name': 'Gamma', 'repo': {'created_at': '2026-02-01T00:00:00Z'}},
+                {'name': 'Delta', 'repo': None}]
+        self.assertEqual([r['name'] for r in app.sort_apps(rows, 'newest')], ['alpha', 'Gamma', 'Beta', 'Delta'])
+        self.assertEqual([r['name'] for r in app.sort_apps(rows, 'az')], ['alpha', 'Beta', 'Delta', 'Gamma'])
+        self.assertEqual([r['name'] for r in app.sort_apps(rows, 'za')], ['Gamma', 'Delta', 'Beta', 'alpha'])
+
     def test_marker(self):
         self.assertTrue(app.valid_marker(b'#!/bin/bash\n# pi-app-store: 1'))
         self.assertFalse(app.valid_marker(b'no'))
