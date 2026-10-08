@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import queue
 import re
 import shutil
 import subprocess
@@ -22,14 +23,15 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 NETWORK_TIMEOUT = 5
 HOME = Path.home() / '.local' / 'share' / 'pi-app-store'
 # Add another apt entry here: ('Display name', ['apt', 'package', ...]).
 SOFTWARE = [('Python 3', ['apt', 'python3', 'python3-pip', 'python3-venv']),
-            ('Ollama', ['script', 'https://ollama.com/install.sh'])]
+            ('Ollama', ['script', 'https://ollama.com/install.sh']),
+            ('Python Tk (python3-tk)', ['apt', 'python3-tk'])]
 
 
 def fetch(url, limit=2_000_000):
@@ -172,7 +174,7 @@ def extract(data, dest):
                 raise ValueError('Archive contains a link or special file')
 
 
-def install(repo, selected_commit=None):
+def install(repo, selected_commit=None, confirm=None):
     name = repo['name']
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..'):
         raise ValueError('Invalid repository name')
@@ -192,7 +194,7 @@ def install(repo, selected_commit=None):
     print('This script can change files and run commands with your current privileges.')
     if os.geteuid() == 0:
         print('WARNING: you are root. The installer will have full system access.')
-    if not ask('Trust this installer and install?'):
+    if not (confirm(marker.decode()) if confirm else ask('Trust this installer and install?')):
         return
     HOME.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=HOME) as tmp:
@@ -412,8 +414,51 @@ def show_software_changes():
     UI.write('Record: ' + str(HOME / 'software-changes.json'))
 
 
+def software_status(name):
+    """Honest local status. Only checks whether the tool is present, not its version."""
+    if name.startswith('Python Tk'):
+        import importlib.util
+        return 'installed' if importlib.util.find_spec('_tkinter') else 'missing'
+    executable = {'Python 3': 'python3', 'Ollama': 'ollama'}.get(name)
+    if executable:
+        return 'installed' if shutil.which(executable) else 'missing'
+    return 'unknown'
+
+
+def install_software(name, recipe, confirm):
+    prefix = [] if os.geteuid() == 0 else ['sudo']
+    if prefix and not shutil.which('sudo'):
+        raise ValueError('Run as root or install sudo first')
+    if recipe[0] == 'apt':
+        message = 'Will refresh apt and install: ' + ', '.join(recipe[1:])
+        print(message)
+        if confirm(message, 'Install ' + name + '?'):
+            subprocess.run(prefix + ['apt-get', 'update'], check=True)
+            subprocess.run(prefix + ['apt-get', 'install', '-y'] + recipe[1:], check=True)
+            return True
+    else:
+        print('Official installer: ' + recipe[1])
+        print('This installs a system service and may download large files.')
+        if not shutil.which('wget'):
+            raise ValueError('Install wget first')
+        if confirm('Official installer: ' + recipe[1] + '\nThis installs a system service and may download large files.',
+                   'Download the Ollama installer for review?'):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'install.sh'
+                subprocess.run(['wget', '-O', str(path), recipe[1]], check=True)
+                text = path.read_text()
+                print(text)
+                print('The upstream installer may use curl internally.')
+                if confirm(text + '\nThe upstream installer may use curl internally.',
+                           'Run this official installer with system privileges?'):
+                    subprocess.run(prefix + ['sh', str(path)], check=True)
+                    return True
+    return False
+
+
 def other():
-    choice = choose('OTHER SOFTWARE', [name for name, _ in SOFTWARE] + ['View recorded upstream edits'])
+    choice = choose('OTHER SOFTWARE', [f'{name}  [{software_status(name)}]' for name, _ in SOFTWARE]
+                    + ['View recorded upstream edits'])
     if choice is None:
         return
     if choice == len(SOFTWARE):
@@ -423,27 +468,7 @@ def other():
         UI.write('Installing software needs internet. Restart without --offline.')
         return
     name, recipe = SOFTWARE[choice]
-    prefix = [] if os.geteuid() == 0 else ['sudo']
-    if prefix and not shutil.which('sudo'):
-        raise ValueError('Run as root or install sudo first')
-    if recipe[0] == 'apt':
-        print('Will refresh apt and install: ' + ', '.join(recipe[1:]))
-        if ask('Install ' + name + '?'):
-            subprocess.run(prefix + ['apt-get', 'update'], check=True)
-            subprocess.run(prefix + ['apt-get', 'install', '-y'] + recipe[1:], check=True)
-    else:
-        print('Official installer: ' + recipe[1])
-        print('This installs a system service and may download large files.')
-        if not shutil.which('wget'):
-            raise ValueError('Install wget first')
-        if ask('Download the Ollama installer for review?'):
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / 'install.sh'
-                subprocess.run(['wget', '-O', str(path), recipe[1]], check=True)
-                print(path.read_text())
-                print('The upstream installer may use curl internally.')
-                if ask('Run this official installer with system privileges?'):
-                    subprocess.run(prefix + ['sh', str(path)], check=True)
+    install_software(name, recipe, lambda text, question: ask(question))
 
 
 def check_updates(report=True):
@@ -545,14 +570,398 @@ def updates(pending):
             pending.pop(choice)
 
 
+def build_rows(view, apps, state, pending, software=None):
+    """Pure helper for the window: list rows for one section. No network, no Tk."""
+    waiting = {row[1] for row in pending}
+    rows = []
+    if view in ('apps', 'games'):
+        for repo in apps:
+            games = repo.get('category') == 'games'
+            if games != (view == 'games'):
+                continue
+            name = repo['name']
+            item = state.get(name)
+            if name in waiting:
+                status = 'update available'
+            elif item:
+                status = 'installed ' + (item.get('version') or '')
+            else:
+                status = 'not installed'
+            rows.append({'name': name, 'status': status.strip(), 'desc': plain(repo.get('description') or ''),
+                         'repo': repo, 'installed': bool(item)})
+    elif view == 'installed':
+        for name in sorted(state, key=str.casefold):
+            item = state[name]
+            try:
+                installed_directory(item)
+                status = 'ready' + (' - update available' if name in waiting else '')
+                ok = True
+            except (OSError, ValueError, UnicodeError):
+                status, ok = 'missing - reinstall', False
+            rows.append({'name': name, 'status': status, 'desc': 'version ' + (item.get('version') or 'legacy'),
+                         'repo': None, 'installed': ok})
+    elif view == 'updates':
+        for label, name, commit, source in pending:
+            rows.append({'name': label, 'status': 'update available', 'desc': 'commit ' + commit[:12],
+                         'repo': None, 'installed': True, 'pending': (label, name, commit, source)})
+    elif view == 'other':
+        for name, recipe in SOFTWARE:
+            rows.append({'name': name, 'status': software_status(name),
+                         'desc': 'apt: ' + ' '.join(recipe[1:]) if recipe[0] == 'apt' else 'official installer, reviewed first',
+                         'repo': None, 'installed': False, 'software': (name, recipe)})
+        for name, row in (software or {}).items():
+            latest = row.get('latest', {})
+            rows.append({'name': name + ' (upstream edits)', 'status': 'source edit ' + latest.get('commit', '')[:10],
+                         'desc': latest.get('summary', ''), 'repo': None, 'installed': False})
+    return rows
+
+
+def terminal_command(directory):
+    """Terminal emulator command for apps that need a keyboard window, or None."""
+    script = 'bash ' + MARKER + ' run; echo; read -r -p "Press Enter to close" _'
+    for exe, flag in (('x-terminal-emulator', '-e'), ('lxterminal', '-e'), ('xterm', '-e'),
+                      ('xfce4-terminal', '-x'), ('mate-terminal', '-x'), ('gnome-terminal', '--')):
+        path = shutil.which(exe)
+        if path:
+            return [path, flag, 'bash', '-c', script]
+    return None
+
+
+def apply_update(row, confirm):
+    label, name, commit, source = row
+    if source is not None:
+        if not confirm('Replace the App Store program with the version from ' + raw(name, commit, 'appstore.py') + '?'):
+            return False
+        compile(source, 'appstore.py', 'exec')
+        target = Path(__file__).resolve()
+        tmp = target.with_suffix('.update.tmp')
+        tmp.write_bytes(source)
+        os.replace(tmp, target)
+        return True
+    install(api(f'repos/{OWNER}/{name}'), selected_commit=commit, confirm=confirm)
+    return load_state().get(name, {}).get('commit') == commit
+
+
+def gui():
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except ImportError:
+        print('The window needs Tk. On DietPi run: apt-get install -y python3-tk')
+        print('It also needs a desktop or VNC. The terminal menu still works: AppStore')
+        return 1
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        print('No desktop display found (' + str(exc) + '). Use a desktop or VNC, or run AppStore for the terminal menu.')
+        return 1
+    root.title('Pi App Store ' + VERSION)
+    root.geometry('900x560')
+    root.minsize(760, 440)
+    BG, SIDE, SIDE_TXT, ACCENT = '#f4f5f7', '#23272e', '#d7dae0', '#3b82f6'
+    root.configure(bg=BG)
+    style = ttk.Style(root)
+    try:
+        style.theme_use('clam')
+    except tk.TclError:
+        pass
+    style.configure('Treeview', rowheight=28, font=('TkDefaultFont', 10), background='white', fieldbackground='white', borderwidth=0)
+    style.configure('Treeview.Heading', font=('TkDefaultFont', 10, 'bold'), background='#e6e8ec', relief='flat')
+    style.map('Treeview', background=[('selected', ACCENT)], foreground=[('selected', 'white')])
+    style.configure('Accent.TButton', background=ACCENT, foreground='white', padding=(14, 6))
+    style.map('Accent.TButton', background=[('active', '#2f6fd0'), ('disabled', '#a9b8cf')])
+    style.configure('TButton', padding=(12, 6))
+
+    data = {'apps': [], 'pending': [], 'view': 'apps', 'rows': [], 'loaded': False, 'busy': False}
+    jobs = queue.Queue()
+
+    def call_main(fn):
+        box = {}
+        done = threading.Event()
+        def run():
+            box['value'] = fn()
+            done.set()
+        jobs.put(run)
+        done.wait()
+        return box.get('value')
+
+    def pump():
+        while True:
+            try:
+                jobs.get_nowait()()
+            except queue.Empty:
+                break
+        root.after(100, pump)
+
+    def confirm(text):
+        def ask_user():
+            return confirm_dialog('Review before continuing', text)
+        return call_main(ask_user)
+
+    def confirm_dialog(title, text):
+        win = tk.Toplevel(root)
+        win.title(title)
+        win.transient(root)
+        win.geometry('620x380')
+        answer = {'ok': False}
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='Trust this and continue? It can run commands with your account.',
+                  wraplength=580).pack(anchor='w')
+        box = tk.Text(frame, height=12, wrap='word', font=('TkFixedFont', 9), bg='white')
+        box.insert('1.0', plain_text(text))
+        box.configure(state='disabled')
+        box.pack(fill='both', expand=True, pady=8)
+        buttons = ttk.Frame(frame)
+        buttons.pack(anchor='e')
+        def choose_(value):
+            answer['ok'] = value
+            win.destroy()
+        ttk.Button(buttons, text='Cancel', command=lambda: choose_(False)).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Continue', style='Accent.TButton', command=lambda: choose_(True)).pack(side='left')
+        win.protocol('WM_DELETE_WINDOW', lambda: choose_(False))
+        win.grab_set()
+        root.wait_window(win)
+        return answer['ok']
+
+    def plain_text(text):
+        return ''.join(c if c.isprintable() or c in '\n\t' else ' ' for c in str(text))
+
+    # Layout: sidebar | (path bar, list, details) | status bar
+    side = tk.Frame(root, bg=SIDE, width=190)
+    side.pack(side='left', fill='y')
+    side.pack_propagate(False)
+    tk.Label(side, text='Pi App Store', bg=SIDE, fg='white', font=('TkDefaultFont', 13, 'bold'),
+             anchor='w', padx=16, pady=16).pack(fill='x')
+    main_area = tk.Frame(root, bg=BG)
+    main_area.pack(side='left', fill='both', expand=True)
+    head = tk.Frame(main_area, bg=BG)
+    head.pack(fill='x', padx=14, pady=(12, 0))
+    path_label = tk.Label(head, text='', bg=BG, fg='#222', font=('TkDefaultFont', 12, 'bold'), anchor='w')
+    path_label.pack(side='left')
+    top = tk.Frame(main_area, bg=BG)
+    top.pack(fill='x', padx=14, pady=(6, 6))
+    ttk.Button(top, text='Refresh', command=lambda: show(data['view'], reload=True)).pack(side='right')
+    tk.Label(top, text='Search', bg=BG, fg='#666').pack(side='left')
+    search = tk.StringVar()
+    entry = ttk.Entry(top, textvariable=search)
+    entry.pack(side='left', fill='x', expand=True, padx=8)
+
+    columns = ('status', 'desc')
+    tree = ttk.Treeview(main_area, columns=columns, selectmode='browse')
+    tree.heading('#0', text='Name', anchor='w')
+    tree.heading('status', text='Status', anchor='w')
+    tree.heading('desc', text='Description', anchor='w')
+    tree.column('#0', width=190, stretch=False)
+    tree.column('status', width=140, stretch=False)
+    tree.column('desc', width=360)
+    details = tk.Label(main_area, text='Pick something from the list.', bg=BG, fg='#444', anchor='w',
+                       justify='left', wraplength=620, padx=14, pady=8)
+    details.pack(fill='x')
+    bar = tk.Frame(main_area, bg=BG)
+    bar.pack(fill='x', padx=14, pady=(0, 8))
+    btn = {}
+    for key, text, style_name in (('install', 'Install', 'Accent.TButton'), ('run', 'Run', 'Accent.TButton'),
+                                  ('term', 'Run in terminal', 'TButton'), ('update', 'Update', 'Accent.TButton')):
+        btn[key] = ttk.Button(bar, text=text, style=style_name, state='disabled')
+        btn[key].pack(side='left', padx=(0, 8))
+    status = tk.Label(root, text='', bg='#e6e8ec', fg='#333', anchor='w', padx=10)
+    status.pack(side='bottom', fill='x', before=side)
+    bar.pack_forget()
+    details.pack_forget()
+    bar.pack(side='bottom', fill='x', padx=14, pady=(0, 8))
+    details.pack(side='bottom', fill='x')
+    tree.pack(fill='both', expand=True, padx=14)
+
+    def say(text):
+        status.config(text=text)
+
+    def selected():
+        picked = tree.selection()
+        return data['rows'][int(picked[0])] if picked else None
+
+    def update_buttons(event=None):
+        row = selected()
+        for button in btn.values():
+            button.state(['disabled'])
+        if not row:
+            details.config(text='Pick something from the list.')
+            return
+        details.config(text=row['name'] + '\n' + row['status'] + (' - ' + row['desc'] if row['desc'] else ''))
+        view = data['view']
+        if view in ('apps', 'games') and not OFFLINE:
+            btn['install'].state(['!disabled'])
+        if view == 'other' and row.get('software') and not OFFLINE:
+            btn['install'].state(['!disabled'])
+        if row['installed'] and view in ('apps', 'games', 'installed') and row['name'] in load_state():
+            btn['run'].state(['!disabled'])
+            if terminal_command(Path('.')):
+                btn['term'].state(['!disabled'])
+        if view == 'updates' or 'update available' in row['status']:
+            btn['update'].state(['!disabled'])
+
+    def fill():
+        tree.delete(*tree.get_children())
+        needle = search.get().strip().lower()
+        software = {}
+        if data['view'] == 'other':
+            try:
+                software = json.loads((HOME / 'software-changes.json').read_text()).get('software', {})
+            except (OSError, ValueError):
+                software = {}
+        rows = [r for r in build_rows(data['view'], data['apps'], load_state(), data['pending'], software)
+                if needle in (r['name'] + ' ' + r['desc']).lower()]
+        data['rows'] = rows
+        for index, row in enumerate(rows):
+            tree.insert('', 'end', iid=str(index), text='  ' + row['name'], values=(row['status'], row['desc']))
+        if not rows:
+            empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'installed': 'Nothing installed yet.',
+                     'updates': 'No updates waiting.', 'other': 'No recorded checks yet.'}[data['view']]
+            tree.insert('', 'end', iid='empty', text='  ' + empty)
+        update_buttons()
+
+    def background(work, finish, message):
+        if data['busy']:
+            say('Still working, please wait.')
+            return
+        data['busy'] = True
+        say(message)
+        def target():
+            try:
+                result, error = work(), None
+            except Exception as exc:  # worker must always report back
+                result, error = None, str(exc)
+            jobs.put(lambda: finish(result, error))
+        threading.Thread(target=target, daemon=True).start()
+
+    def done_with(message):
+        data['busy'] = False
+        say(message)
+
+    TITLES = {'apps': 'Apps', 'games': 'Games', 'installed': 'Run apps', 'other': 'Other software',
+              'updates': 'Updates'}
+
+    def show(view, reload=False):
+        data['view'] = view
+        path_label.config(text='Pi App Store  >  ' + TITLES[view])
+        for key, button in nav.items():
+            button.config(bg=ACCENT if key == view else SIDE)
+        needs_net = view in ('apps', 'games') and (reload or not data['loaded']) and not OFFLINE
+        if needs_net:
+            def finish(result, error):
+                if error:
+                    done_with('Could not reach GitHub: ' + error)
+                else:
+                    data['apps'], data['loaded'] = result, True
+                    done_with(f'{len(result)} app(s) found.')
+                fill()
+            fill()
+            background(discover, finish, 'Looking for apps...')
+        else:
+            fill()
+            if view in ('apps', 'games') and OFFLINE:
+                say('Offline: browsing needs internet. Run apps still works.')
+
+    nav = {}
+    for key in ('apps', 'games', 'installed', 'updates', 'other'):
+        button = tk.Button(side, text='   ' + TITLES[key], anchor='w', bg=SIDE, fg=SIDE_TXT, activebackground='#3a3f48',
+                           activeforeground='white', relief='flat', bd=0, padx=10, pady=9, font=('TkDefaultFont', 10),
+                           command=lambda k=key: show(k))
+        button.pack(fill='x')
+        nav[key] = button
+
+    def do_install():
+        row = selected()
+        if row and row.get('software'):
+            name, recipe = row['software']
+            def work_software():
+                return install_software(name, recipe, lambda text, question: confirm(text + '\n\n' + question))
+            def finish_software(result, error):
+                done_with(('Install stopped: ' + error) if error else
+                          ('Installed ' + name if result else 'Cancelled.'))
+                fill()
+            background(work_software, finish_software, 'Installing ' + name + '... (progress is in the terminal that opened the store)')
+            return
+        if not row or not row.get('repo'):
+            return
+        def work():
+            install(row['repo'], confirm=confirm)
+        def finish(result, error):
+            done_with(('Install stopped: ' + error) if error else 'Install finished (or cancelled). Check Run apps.')
+            fill()
+        background(work, finish, 'Installing ' + row['name'] + '... (installer output is in the terminal window that opened the store)')
+
+    def do_run(in_terminal=False):
+        row = selected()
+        if not row:
+            return
+        try:
+            directory = installed_directory(load_state()[row['name']])
+            if in_terminal:
+                subprocess.Popen(terminal_command(directory), cwd=directory)
+            else:
+                subprocess.Popen(['bash', MARKER, 'run'], cwd=directory, stdin=subprocess.DEVNULL)
+            say('Started ' + row['name'] + '. Keyboard apps work best with Run in terminal.')
+        except (OSError, ValueError, KeyError, UnicodeError) as exc:
+            say('Cannot run ' + row['name'] + ': ' + str(exc))
+
+    def do_update():
+        row = selected()
+        if not row:
+            return
+        pend = row.get('pending') or next((p for p in data['pending'] if p[1] == row['name']), None)
+        if not pend:
+            return
+        def finish(result, error):
+            if error:
+                done_with('Update stopped: ' + error)
+            elif result:
+                data['pending'] = [p for p in data['pending'] if p[1] != pend[1]]
+                done_with('Updated. ' + ('Restart the App Store to use the new version.' if pend[3] is not None else ''))
+            else:
+                done_with('Update cancelled.')
+            fill()
+        background(lambda: apply_update(pend, confirm), finish, 'Updating...')
+
+    btn['install'].config(command=do_install)
+    btn['run'].config(command=do_run)
+    btn['term'].config(command=lambda: do_run(True))
+    btn['update'].config(command=do_update)
+    tree.bind('<<TreeviewSelect>>', update_buttons)
+    tree.bind('<Double-1>', lambda e: (btn['run'].invoke() if str(btn['run'].cget('state')) != 'disabled'
+                                       else btn['install'].invoke() if str(btn['install'].cget('state')) != 'disabled' else None))
+    search.trace_add('write', lambda *a: fill())
+
+    def start_checks():
+        def finish(result, error):
+            if not error:
+                data['pending'] = result
+            data['busy'] = False
+            say(f'{len(data["pending"])} update(s) available.' if not error else 'Update check failed: ' + error)
+            fill()
+        if not OFFLINE:
+            data['busy'] = False
+            background(lambda: (check_updates(report=False), check_software_changes())[0], finish, 'Checking updates...')
+
+    pump()
+    show('apps')
+    if not OFFLINE:
+        root.after(800, start_checks)
+    root.mainloop()
+    return 0
+
+
 def main(argv=None):
     global OFFLINE, UI
     parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps')
     parser.add_argument('--offline', action='store_true', help='run installed apps without network checks')
     parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
+    parser.add_argument('--gui', action='store_true', help='open the window (needs python3-tk and a desktop)')
     parser.add_argument('--version', action='version', version='Pi App Store ' + VERSION)
     args = parser.parse_args(argv)
     OFFLINE = args.offline
+    if args.gui:
+        return gui()
     UI = Terminal()
     if args.no_color:
         UI.color = False
@@ -636,4 +1045,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
