@@ -16,6 +16,12 @@ After installation, type `appstore` to open it. Every casing works, including `A
 
 If Python is missing on DietPi, run `apt-get update` then `apt-get install -y python3 wget` as root first. The store itself needs Python to start; the Python menu is for installing pip/venv or updating Python after that.
 
+## Default view
+
+On a real terminal (including plain SSH on a headless Pi) the store opens a colored block view: a sidebar with Apps, Games, Run apps, Updates and Other software, a highlighted list you move with the arrow keys, and a detail box. It uses only Python's built-in curses, no desktop needed.
+
+Keys: Up/Down (or j/k) move, Left/Right or Tab switch section (or press 1 to 5), Enter opens the item (runs it if installed, installs it if not), i install, r run, u update, / search, F5 refresh, ? help, q quit. Installers, prompts and apps run in the normal terminal and return to the store when done. Use `appstore --plain` (or set APPSTORE_PLAIN=1) for the plain numbered menu. It is also used automatically on dumb terminals and when output is not a terminal. `--no-color` keeps the layout in black and white. A terminal needs at least 40 columns by 10 rows.
+
 ## Menus
 
 - **GitHub apps:** public, non-fork, non-archived repos from `Greenisus1` that have the marker described below. Pick an app, review its installer, and confirm installation.
