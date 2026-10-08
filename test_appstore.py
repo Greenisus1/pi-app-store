@@ -239,5 +239,30 @@ class Tests(unittest.TestCase):
         self.assertEqual(app.marker_category(b'#!/bin/bash\n# pi-app-store: 1\n# pi-app-store-category: Bad Name!\n'), 'apps')
         self.assertEqual(app.marker_category(b'1\n2\n3\n4\n5\n# pi-app-store-category: games\n'), 'apps')
 
+    def test_window_rows_and_software(self):
+        apps = [{'name': 'a', 'description': 'x\x1b[31m', 'category': 'apps'},
+                {'name': 'g', 'description': 'game', 'category': 'games'}]
+        state = {'a': {'version': '1.0.0', 'directory': str(self.home / 'nope')}}
+        self.assertEqual([r['name'] for r in app.build_rows('apps', apps, state, [])], ['a'])
+        self.assertEqual([r['name'] for r in app.build_rows('games', apps, state, [])], ['g'])
+        row = app.build_rows('apps', apps, state, [('lbl', 'a', 'c' * 40, None)])[0]
+        self.assertEqual(row['status'], 'update available')
+        self.assertNotIn('\x1b', row['desc'])
+        self.assertEqual(app.build_rows('installed', apps, state, [])[0]['status'], 'missing - reinstall')
+        other = app.build_rows('other', [], {}, [])
+        self.assertIn('Python Tk (python3-tk)', [r['name'] for r in other])
+        self.assertIn(app.software_status('Python Tk (python3-tk)'), ('installed', 'missing'))
+        self.assertIn(('Python Tk (python3-tk)', ['apt', 'python3-tk']), app.SOFTWARE)
+
+    def test_terminal_command_and_gui_fallback(self):
+        with patch.object(app.shutil, 'which', return_value=None):
+            self.assertIsNone(app.terminal_command(self.home))
+        with patch.object(app.shutil, 'which', side_effect=lambda n: '/bin/' + n if n == 'xterm' else None):
+            self.assertEqual(app.terminal_command(self.home)[:2], ['/bin/xterm', '-e'])
+        import sys
+        with patch.dict(sys.modules, {'tkinter': None}), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(app.gui(), 1)
+        self.assertIn('python3-tk', out.getvalue())
+
 
 if __name__ == '__main__': unittest.main()
