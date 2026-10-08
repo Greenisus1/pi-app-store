@@ -197,17 +197,33 @@ class Tests(unittest.TestCase):
             if '/tarball/' in url: return archive.getvalue()
             if url.endswith(app.VERSION_FILE): return b'{"version":"2.0"}'
             return marker
-        with patch.object(app, 'fetch', side_effect=fetch), patch.object(app, 'api', return_value={'sha': 'pinned'}), patch('builtins.input', return_value='y'):
+        with patch.object(app, 'fetch', side_effect=fetch), patch.object(app, 'api', return_value={'sha': 'pinned'}), patch.object(app, 'can_install', return_value=True), patch('builtins.input', side_effect=AssertionError('no prompt expected')):
             app.install({'name': 'Demo', 'default_branch': 'main'})
         saved = app.load_state()['Demo']
         self.assertEqual(saved['version'], '2.0')
         self.assertEqual(saved['commit'], 'pinned')
         self.assertTrue(Path(saved['directory']).is_dir())
 
-    def test_declined_install_unchanged(self):
-        with patch.object(app, 'api', return_value={'sha': 'pinned'}), patch.object(app, 'remote_version', return_value='2'), patch.object(app, 'fetch', return_value=b'# pi-app-store: 1'), patch('builtins.input', return_value='n'):
+    def test_install_needs_root(self):
+        out = io.StringIO()
+        with patch.object(app, 'can_install', return_value=False), patch.object(app, 'api') as api, patch.object(app, 'fetch') as fetch, patch.object(app.subprocess, 'run') as run, contextlib.redirect_stdout(out):
             app.install({'name': 'Demo', 'default_branch': 'main'})
+            self.assertFalse(app.install_software('Tool', ['apt', 'tool']))
+            self.assertFalse(app.apply_update(('Demo', 'Demo', 'c', None)))
+        self.assertIn('sudo appstore', out.getvalue())
         self.assertEqual(app.load_state(), {})
+        api.assert_not_called(); fetch.assert_not_called(); run.assert_not_called()
+
+    def test_can_install_follows_root(self):
+        with patch.object(app.os, 'geteuid', return_value=0):
+            self.assertTrue(app.can_install())
+        with patch.object(app.os, 'geteuid', return_value=1000):
+            self.assertFalse(app.can_install())
+
+    def test_software_install_no_prompt_as_root(self):
+        with patch.object(app, 'can_install', return_value=True), patch.object(app.subprocess, 'run') as run, patch('builtins.input', side_effect=AssertionError('no prompt expected')):
+            self.assertTrue(app.install_software('Tool', ['apt', 'a', 'b']))
+        self.assertEqual(run.call_args_list[-1].args[0], ['apt-get', 'install', '-y', 'a', 'b'])
 
     def test_version_missing_only_404_falls_back(self):
         with patch.object(app, 'fetch', side_effect=urllib.error.HTTPError('url', 404, 'gone', {}, None)):
