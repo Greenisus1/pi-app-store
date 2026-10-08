@@ -4,6 +4,8 @@ import argparse
 import concurrent.futures
 from datetime import datetime, timezone
 import io
+import html
+import xml.etree.ElementTree as ET
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -23,7 +25,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.5.0'
+VERSION = '1.5.1'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 NETWORK_TIMEOUT = 5
@@ -38,16 +40,91 @@ def fetch(url, limit=2_000_000):
     if OFFLINE:
         raise OSError('Offline mode: network access disabled')
     req = urllib.request.Request(url, headers={'User-Agent': 'pi-app-store/1',
-                                               'Accept': 'application/vnd.github+json'})
-    with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT) as response:
-        data = response.read(limit + 1)
+                                               'Accept': '*/*'})
+    try:
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT) as response:
+            data = response.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429):
+            raise OSError('GitHub/download host refused the request (HTTP ' + str(exc.code) + '). No API token needed. Stop and try later; installed apps still run offline.') from None
+        raise
     if len(data) > limit:
         raise ValueError('Download exceeds size limit')
     return data
 
 
+def repository_name(value):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', value) or value in ('.', '..'):
+        raise ValueError('Invalid repository name')
+    return value
+
+
+def repository_metadata(owner, name):
+    repository_name(owner); repository_name(name)
+    page = fetch('https://github.com/' + owner + '/' + name, 4_000_000).decode('utf-8')
+    match = re.search(r'"defaultBranch"\s*:\s*"([^"\\]+)"', page)
+    if not match:
+        raise ValueError('GitHub page format changed; default branch could not be verified. No install started.')
+    branch = match.group(1)
+    if not branch or len(branch) > 255 or any(ord(c) < 32 for c in branch):
+        raise ValueError('Invalid default branch')
+    description = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', page)
+    return {'name': name, 'default_branch': branch, 'description': html.unescape(description.group(1)) if description else '',
+            'html_url': 'https://github.com/' + owner + '/' + name,
+            'fork': bool(re.search(r'"isFork"\s*:\s*true', page)),
+            'archived': bool(re.search(r'"isArchived"\s*:\s*true', page))}
+
+
+def latest_commit(owner, name, branch):
+    repository_name(owner); repository_name(name)
+    url = 'https://github.com/' + owner + '/' + name + '/commits/' + urllib.parse.quote(branch, safe='') + '.atom'
+    data = fetch(url, 2_000_000)
+    try:
+        root = ET.fromstring(data)
+        ns = {'a': 'http://www.w3.org/2005/Atom'}
+        row = root.find('a:entry', ns)
+        identity = row.findtext('a:id', default='', namespaces=ns) if row is not None else ''
+        match = re.search(r'::Commit/([0-9a-f]{40})$', identity)
+        if not match:
+            raise ValueError('No verified commit in GitHub feed. No install started.')
+        sha = match.group(1)
+        return {'sha': sha, 'html_url': 'https://github.com/' + owner + '/' + name + '/commit/' + sha,
+                'commit': {'committer': {'date': row.findtext('a:updated', default='', namespaces=ns)},
+                           'message': row.findtext('a:title', default='', namespaces=ns)}}
+    except ET.ParseError:
+        raise ValueError('GitHub commit feed could not be read. No install started.') from None
+
+
 def api(path):
-    return json.loads(fetch('https://api.github.com/' + path))
+    """Compatibility adapter for existing callers: HTML/Atom only, never REST API."""
+    match = re.fullmatch(r'repos/([^/]+)/([^/]+)(?:/commits/(.+))?', path)
+    if not match:
+        raise ValueError('Unsupported repository request')
+    owner, name, branch = match.groups()
+    return latest_commit(owner, name, urllib.parse.unquote(branch)) if branch else repository_metadata(owner, name)
+
+
+def repository_candidates():
+    """GitHub public source listing; HTML may change, never silently guess a branch."""
+    names = set()
+    for page in range(1, 21):
+        url = 'https://github.com/' + OWNER + '?tab=repositories&type=source&page=' + str(page)
+        body = fetch(url, 4_000_000).decode('utf-8')
+        found = set(re.findall(r'href="/' + re.escape(OWNER) + r'/([A-Za-z0-9_.-]+)"[^>]*itemprop="name codeRepository"', body))
+        if not found:
+            # Attribute order differs between GitHub renderers.
+            found = set(re.findall(r'itemprop="name codeRepository"[^>]*href="/' + re.escape(OWNER) + r'/([A-Za-z0-9_.-]+)"', body))
+        if not found:
+            if page == 1:
+                raise ValueError('GitHub repository listing could not be read. Installed apps still run; no API login/token required.')
+            break
+        new = found - names
+        names.update(found)
+        if not new:
+            break
+        if 'rel="next"' not in body and '>Next</a>' not in body and '>Next</button>' not in body:
+            break
+    return sorted(names)
 
 
 def raw(repo, ref, path=MARKER):
@@ -89,17 +166,19 @@ def marker_category(data):
 
 
 def discover():
-    repos = []
-    for page in range(1, 21):
-        batch = api(f'users/{OWNER}/repos?per_page=100&page={page}')
-        repos.extend(r for r in batch if not r['archived'] and not r['fork'])
-        if len(batch) < 100:
-            break
+    repos = [{'name': name} for name in repository_candidates()]
     errors = []
     def check(repo):
         try:
+            repo = repository_metadata(OWNER, repo['name'])
+            if repo['archived'] or repo['fork']:
+                return None
             marker = fetch(raw(repo['name'], repo['default_branch']), 16_384)
             if valid_marker(marker):
+                try:
+                    repo['pushed_at'] = latest_commit(OWNER, repo['name'], repo['default_branch'])['commit']['committer']['date']
+                except (OSError, ValueError):
+                    pass
                 return dict(repo, category=marker_category(marker))
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
@@ -191,6 +270,8 @@ def install(repo, selected_commit=None, confirm=None):
         raise ValueError('Invalid repository name')
     branch = urllib.parse.quote(repo['default_branch'], safe='')
     commit = selected_commit or api(f'repos/{OWNER}/{name}/commits/{branch}')['sha']
+    if not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('A verified 40-character commit is required; no install started.')
     previous = load_state().get(name)
     if previous and previous.get('commit') == commit and Path(previous['directory']).is_dir():
         print('This commit is already installed. Open Installed apps to launch it.')
@@ -206,7 +287,7 @@ def install(repo, selected_commit=None, confirm=None):
     with tempfile.TemporaryDirectory(dir=HOME) as tmp:
         stage = Path(tmp) / 'app'
         stage.mkdir()
-        extract(fetch(f'https://api.github.com/repos/{OWNER}/{name}/tarball/{commit}',
+        extract(fetch(f'https://codeload.github.com/{OWNER}/{name}/tar.gz/{commit}',
                       40_000_000), stage)
         if (stage / MARKER).read_bytes() != marker:
             raise ValueError('Installer mismatch')
