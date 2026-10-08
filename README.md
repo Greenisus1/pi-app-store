@@ -24,7 +24,7 @@ Keys: Up/Down (or j/k) move, Left/Right or Tab switch section (or press 1 to 5),
 
 ## Menus
 
-- **GitHub apps:** public, non-fork, non-archived repos from `Greenisus1` that have the marker described below. Pick an app, review its installer, and confirm installation.
+- **GitHub apps:** public, non-fork, non-archived repos from `Greenisus1` that have the marker described below. Pick an app and press Enter or i; there is no approval prompt. Installing only works when the store runs as root (`sudo appstore`).
 - **Games folder:** a game puts `# pi-app-store-category: games` on line 3 of its `app-store.sh` (within the first 5 lines, after the signature). GitHub apps then asks Apps or Games first. Without that line an app is a normal app.
 - **Window (optional):** `appstore --gui` opens a file-manager style window: sidebar with Apps, Games, Run apps, Updates and Other software, a searchable list, and Install / Run / Run in terminal / Update buttons. It needs Python Tk and a desktop or VNC session (`apt-get install -y python3-tk`); over plain SSH there is no screen, so use the terminal menu (`appstore`) there. Installer scripts are still shown for review before anything runs. Installer progress prints in the terminal that started the window. Keyboard apps (such as Walk AI) use Run in terminal; window apps use Run.
 - **Run apps:** choose any app installed by this store. Ready and missing-file status is shown. Apps launch locally without downloads. When the app exits or fails, you return to Run apps. Press 0 to return to the main menu. Missing or invalid apps cannot launch; reinstall them. Python 3 opens an interactive shell; Ollama lists locally installed models and lets you run one. System tools appear only when their command is installed. Apps installed outside this store are not automatically imported.
@@ -58,9 +58,9 @@ Replace `myapp.py` with the real filename. A Bash app can use `bash -n myapp.sh`
 
 ## Install details and safety
 
-Discovery only reads markers; it does not run them. After choosing an app, the store resolves the current default branch to a commit, shows the marker from that commit, and asks for confirmation. It downloads the whole repo at that same commit, checks that the marker matches, rejects links and unsafe archive paths, then runs `bash app-store.sh install`.
+Discovery only reads markers; it does not run them. After choosing an app, the store resolves the current default branch to a commit, checks the marker from that commit, and (only if the store was started as root, for example `sudo appstore`) goes straight on without asking. Without root it stops and says to rerun with `sudo appstore`. It downloads the whole repo at that same commit, checks that the marker matches, rejects links and unsafe archive paths, then runs `bash app-store.sh install`.
 
-The installer can call other files or the network. Review the repository too if you do not trust it. On DietPi's root account, installers and apps run as root and have full system access. There is no sandbox. Package installations may affect the system; this store does not roll them back.
+Because there is no approval step, installs, software installs and updates all need root (`sudo appstore`); browsing and searching work without it. The installer can call other files or the network. Review the repository too if you do not trust it. On DietPi's root account, installers and apps run as root and have full system access. There is no sandbox. Package installations may affect the system; this store does not roll them back.
 
 Files and the installed list are stored under `~/.local/share/pi-app-store/`. Apps launch from their saved commit without downloading a new version. To update, choose Updates or browse and install again. Old commit folders remain; there is no uninstall menu in this first version. Deleting a folder does not undo a system package installation.
 
