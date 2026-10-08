@@ -264,5 +264,18 @@ class Tests(unittest.TestCase):
             self.assertEqual(app.gui(), 1)
         self.assertIn('python3-tk', out.getvalue())
 
+    def test_rich_view_choice_and_helpers(self):
+        tty = {'TERM': 'xterm-256color'}
+        self.assertTrue(app.use_rich(False, tty, True, True))
+        self.assertFalse(app.use_rich(True, tty, True, True))
+        self.assertFalse(app.use_rich(False, dict(tty, APPSTORE_PLAIN='1'), True, True))
+        self.assertFalse(app.use_rich(False, tty, False, True))
+        self.assertFalse(app.use_rich(False, {'TERM': 'dumb'}, True, True))
+        self.assertFalse(app.use_rich(False, {}, True, True))
+        self.assertEqual(app.ellipsize('abcdef', 4), 'abc\u2026')
+        self.assertEqual(app.ellipsize('ab\x1b[31m', 20).count('\x1b'), 0)
+        self.assertEqual([k for k, _ in app.SECTIONS], ['apps', 'games', 'installed', 'updates', 'other'])
+        self.assertEqual(app.read_software_records(), {})
+
 
 if __name__ == '__main__': unittest.main()
