@@ -23,7 +23,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 NETWORK_TIMEOUT = 5
@@ -951,17 +951,532 @@ def gui():
     return 0
 
 
+SECTIONS = [('apps', 'Apps'), ('games', 'Games'), ('installed', 'Run apps'),
+            ('updates', 'Updates'), ('other', 'Other software')]
+
+
+def read_software_records():
+    try:
+        return json.loads((HOME / 'software-changes.json').read_text()).get('software', {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def ellipsize(text, width):
+    text = plain(text)
+    if width <= 0:
+        return ''
+    return text if len(text) <= width else text[:max(0, width - 1)] + '\u2026'
+
+
+def use_rich(plain_flag, env, stdin_tty, stdout_tty):
+    """Rich keyboard view is the default only on a real, capable terminal."""
+    if plain_flag or env.get('APPSTORE_PLAIN') or not (stdin_tty and stdout_tty):
+        return False
+    return env.get('TERM', '') not in ('', 'dumb', 'unknown')
+
+
+def tui(no_color=False):
+    os.environ.setdefault('ESCDELAY', '25')
+    import curses
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except locale.Error:
+        pass
+    utf8 = 'utf' in (locale.getpreferredencoding(False) or '').lower()
+    BLOCK, DOT, HALF, UP, DOWN = ('\u2588', '\u25cf', '\u258c', '\u25b2', '\u25bc') if utf8 else ('#', '*', '>', '^', 'v')
+    H, V = ('\u2500', '\u2502') if utf8 else ('-', '|')
+    TLR, TRR, BLR, BRR = ('\u256d', '\u256e', '\u2570', '\u256f') if utf8 else ('+', '+', '+', '+')
+    data = {'apps': [], 'pending': [], 'loaded': False, 'busy': None, 'rows': [], 'software': {}}
+    jobs = queue.Queue()
+    ui = {'view': 0, 'sel': 0, 'top': 0, 'search': '', 'typing': False, 'msg': '', 'help': False}
+
+    def run(stdscr):
+        colors = curses.has_colors() and not no_color and 'NO_COLOR' not in os.environ
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+        stdscr.timeout(120)
+        attr = {}
+        if colors:
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+            except curses.error:
+                pass
+            pairs = {'head': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'sel': (curses.COLOR_BLACK, curses.COLOR_CYAN),
+                     'ok': (curses.COLOR_GREEN, -1), 'warn': (curses.COLOR_YELLOW, -1), 'bad': (curses.COLOR_RED, -1),
+                     'foot': (curses.COLOR_BLACK, curses.COLOR_WHITE), 'key': (curses.COLOR_YELLOW, curses.COLOR_BLUE),
+                     'apps': (curses.COLOR_CYAN, -1), 'games': (curses.COLOR_MAGENTA, -1),
+                     'installed': (curses.COLOR_GREEN, -1), 'updates': (curses.COLOR_YELLOW, -1),
+                     'other': (curses.COLOR_BLUE, -1), 'side': (curses.COLOR_WHITE, curses.COLOR_BLACK),
+                     'footkey': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'chip': (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+                     'pop': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'headdim': (curses.COLOR_WHITE, curses.COLOR_BLUE),
+                     'logo0': (curses.COLOR_CYAN, curses.COLOR_BLUE), 'logo1': (curses.COLOR_MAGENTA, curses.COLOR_BLUE),
+                     'logo2': (curses.COLOR_GREEN, curses.COLOR_BLUE), 'logo3': (curses.COLOR_YELLOW, curses.COLOR_BLUE)}
+            for number, (name, (fg, bg)) in enumerate(pairs.items(), 1):
+                try:
+                    curses.init_pair(number, fg, bg)
+                    attr[name] = curses.color_pair(number)
+                except curses.error:
+                    attr[name] = 0
+            attr['head'] |= curses.A_BOLD
+            attr['sel'] |= curses.A_BOLD
+        else:
+            for name in ('head', 'sel', 'foot', 'key', 'chip', 'footkey', 'headdim'):
+                attr[name] = curses.A_REVERSE
+            for name in ('logo0', 'logo1', 'logo2', 'logo3'):
+                attr[name] = curses.A_REVERSE | curses.A_BOLD
+            attr['pop'] = curses.A_REVERSE
+            for name in ('ok', 'warn', 'bad', 'apps', 'games', 'installed', 'updates', 'other', 'side'):
+                attr[name] = curses.A_BOLD if name in ('ok', 'warn', 'bad') else 0
+        dim = curses.A_DIM
+
+        def put(y, x, text, a=0):
+            height, width = stdscr.getmaxyx()
+            if y < 0 or y >= height or x >= width:
+                return
+            text = plain(text)[:max(0, width - x - (1 if y == height - 1 else 0))]
+            try:
+                stdscr.addstr(y, x, text, a)
+            except curses.error:
+                pass
+
+        def fill_row(y, a):
+            put(y, 0, ' ' * (stdscr.getmaxyx()[1] - (1 if y == stdscr.getmaxyx()[0] - 1 else 0)), a)
+
+        def rows():
+            key = SECTIONS[ui['view']][0]
+            needle = ui['search'].strip().lower()
+            found = build_rows(key, data['apps'], load_state(), data['pending'],
+                               data['software'] if key == 'other' else None)
+            return [r for r in found if needle in (r['name'] + ' ' + r['desc']).lower()]
+
+        def badge(status):
+            if 'update' in status:
+                return attr['warn']
+            if status.startswith(('installed', 'ready')):
+                return attr['ok']
+            if 'missing' in status:
+                return attr['bad']
+            return dim
+
+        spin = '|/-\\'
+        if utf8:
+            spin = '\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f'
+        tick = [0]
+
+        def chips(y, x, items, key_attr, label_attr, gap=2):
+            for key_text, label in items:
+                put(y, x, ' ' + key_text + ' ', key_attr)
+                put(y, x + len(key_text) + 2, ' ' + label, label_attr)
+                x += len(key_text) + len(label) + 3 + gap
+
+        def counts():
+            state = load_state()
+            apps_n = sum(1 for r in data['apps'] if r.get('category') != 'games')
+            games_n = sum(1 for r in data['apps'] if r.get('category') == 'games')
+            return {'apps': apps_n if data['loaded'] else None, 'games': games_n if data['loaded'] else None,
+                    'installed': len(state), 'updates': len(data['pending']), 'other': len(SOFTWARE)}
+
+        def draw():
+            height, width = stdscr.getmaxyx()
+            stdscr.erase()
+            tick[0] += 1
+            if height < 10 or width < 40:
+                put(0, 0, 'Too small.', 0)
+                put(1, 0, 'Try: appstore --plain', 0)
+                stdscr.refresh()
+                return
+            key, title = SECTIONS[ui['view']]
+            # Title bar with a strip of color blocks
+            fill_row(0, attr['head'])
+            for n, name in enumerate(('apps', 'games', 'installed', 'updates')):
+                put(0, 2 + n * 2, BLOCK * 2, attr['logo' + str(n)])
+            put(0, 11, 'PI APP STORE', attr['head'])
+            put(0, 24, 'v' + VERSION, attr['headdim'])
+            if OFFLINE:
+                tag = 'OFFLINE'
+            elif data['busy']:
+                tag = spin[(tick[0] // 1) % len(spin)] + ' ' + data['busy']
+            else:
+                tag = DOT + ' online'
+            put(0, max(26, width - len(tag) - 2), tag, attr['head'])
+            wide = width >= 72
+            left = 24 if wide else 0
+            found = rows()
+            data['rows'] = found
+            ui['sel'] = max(0, min(ui['sel'], len(found) - 1))
+            number = counts()
+            if wide:
+                put(2, 3, 'BROWSE', dim | curses.A_BOLD)
+                for index, (k, name) in enumerate(SECTIONS):
+                    y = 4 + index * 2
+                    selected = index == ui['view']
+                    if selected:
+                        fill_row_part(y, 1, left - 3, attr['sel'])
+                        put(y, 0, HALF, attr[k] | curses.A_BOLD)
+                    else:
+                        put(y, 1, BLOCK, attr[k])
+                    put(y, 3, name, attr['sel'] if selected else 0)
+                    n = number[k]
+                    if n:
+                        badge_text = str(n)
+                        put(y, left - 4 - len(badge_text), badge_text,
+                            attr['sel'] if selected else (attr['warn'] if k == 'updates' else dim))
+                if height >= 24:
+                    put(height - 4, 3, 'Tab: next section', dim)
+                    put(height - 3, 3, '? for help', dim)
+                for y in range(1, height - 2):
+                    put(y, left - 1, V, dim)
+                x0 = left + 1
+                head_y = 2
+            else:
+                x = 1
+                for index, (k, name) in enumerate(SECTIONS):
+                    label = ' ' + name.split()[0] + ' '
+                    put(1, x, label, attr['sel'] if index == ui['view'] else attr[k])
+                    x += len(label) + 1
+                x0 = 1
+                head_y = 2
+            span = width - x0 - 1
+            put(head_y, x0 + 1, title.upper(), curses.A_BOLD)
+            total = f'{len(found)}' if found else ''
+            put(head_y, x0 + 2 + len(title), total, dim)
+            hint = ('/ ' + ui['search'] + ('_' if ui['typing'] else '')) if (ui['search'] or ui['typing']) else 'press / to search'
+            put(head_y, max(x0 + len(title) + 8, width - len(hint) - 2), hint, attr['warn'] if ui['typing'] or ui['search'] else dim)
+            put(head_y + 1, x0 + 1, H * max(0, span - 2), dim)
+            col_y = head_y + 2
+            name_w = max(14, min(30, span // 3))
+            stat_w = max(12, min(20, span // 4))
+            put(col_y, x0 + 3, 'NAME'.ljust(name_w + 2) + 'STATUS'.ljust(stat_w + 2) + 'DESCRIPTION', dim | curses.A_BOLD)
+            body_top = col_y + 1
+            panel_h = 6 if height >= 24 else 4
+            body_h = height - body_top - panel_h - 2
+            if ui['sel'] < ui['top']:
+                ui['top'] = ui['sel']
+            if ui['sel'] >= ui['top'] + body_h:
+                ui['top'] = max(0, ui['sel'] - body_h + 1)
+            if not found:
+                empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'installed': 'Nothing installed yet.',
+                         'updates': 'Everything is up to date.', 'other': 'No recorded checks yet.'}[key]
+                tip = {'apps': 'Press F5 to look again.', 'games': 'New games appear here automatically.',
+                       'installed': 'Open Apps or Games and press Enter on one.', 'updates': 'Updates show up here.',
+                       'other': 'Needs internet for the first check.'}[key]
+                if data['busy'] and key in ('apps', 'games'):
+                    empty, tip = 'Looking for apps...', 'Checking GitHub.'
+                put(body_top + 1, x0 + 3, empty, curses.A_BOLD)
+                put(body_top + 2, x0 + 3, tip, dim)
+            for line in range(max(0, body_h)):
+                index = ui['top'] + line
+                if index >= len(found):
+                    break
+                row = found[index]
+                y = body_top + line
+                selected = index == ui['sel']
+                if selected:
+                    fill_row_part(y, x0, width - 2, attr['sel'])
+                    put(y, x0, HALF, attr[key] | curses.A_BOLD)
+                base = attr['sel'] if selected else 0
+                put(y, x0 + 2, ellipsize(row['name'], name_w).ljust(name_w), base | (curses.A_BOLD if selected else 0))
+                dot = DOT + ' ' + ellipsize(row['status'], stat_w - 2)
+                put(y, x0 + name_w + 4, dot.ljust(stat_w), base if selected else badge(row['status']))
+                put(y, x0 + name_w + stat_w + 6, ellipsize(row['desc'], span - name_w - stat_w - 8), base if selected else dim)
+            if body_h > 0 and ui['top'] > 0:
+                put(body_top, width - 2, UP, dim)
+            if body_h > 0 and ui['top'] + body_h < len(found):
+                put(body_top + body_h - 1, width - 2, DOWN, dim)
+            # Detail panel with rounded corners and a title
+            box_y = height - panel_h - 2
+            cur = found[ui['sel']] if found else None
+            label = ' ' + ellipsize(cur['name'], span - 8) + ' ' if cur else ' Details '
+            put(box_y, x0 + 1, TLR + H + label + H * max(0, span - 4 - len(label)) + TRR, dim)
+            put(box_y, x0 + 3, label, curses.A_BOLD)
+            for yy in range(box_y + 1, box_y + panel_h - 1):
+                put(yy, x0 + 1, V, dim)
+                put(yy, x0 + span - 1, V, dim)
+            put(box_y + panel_h - 1, x0 + 1, BLR + H * max(0, span - 3) + BRR, dim)
+            if cur:
+                inner = span - 6
+                put(box_y + 1, x0 + 3, DOT + ' ' + ellipsize(cur['status'], inner - 2), badge(cur['status']) | curses.A_BOLD)
+                text_rows = textwrap.wrap(plain(cur['desc'] or 'No description.'), max(10, inner)) or ['']
+                if panel_h >= 6:
+                    for n, part in enumerate(text_rows[:2]):
+                        put(box_y + 2 + n, x0 + 3, ellipsize(part, inner) if n == 1 and len(text_rows) > 2 else part, 0)
+                    action_y = box_y + 4
+                else:
+                    action_y = box_y + 2
+                installed_now = cur['name'] in load_state()
+                if key == 'updates':
+                    acts = [('Enter', 'Update')]
+                elif key == 'other':
+                    acts = [('Enter', 'Install')]
+                elif installed_now:
+                    acts = [('Enter', 'Run')] + ([('u', 'Update')] if 'update' in cur['status'] else [])
+                else:
+                    acts = [('Enter', 'Install')]
+                chips(action_y, x0 + 3, acts, attr['chip'], 0)
+            put(height - 2, 1, (' ' + ellipsize(ui['msg'], width - 4)) if ui['msg'] else ' ', attr['warn'] if ui['msg'] else dim)
+            fill_row(height - 1, attr['foot'])
+            full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
+                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('/', 'search'),
+                    ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
+            priority = ['Enter', 'q', '?', 'i', 'r', 'u', '/', full[0][0], full[1][0], 'F5']
+            keep, used = set(), 0
+            for name in priority:
+                label = next(x for x in full if x[0] == name)
+                need = len(label[0]) + len(label[1]) + 4
+                if used + need <= width - 1:
+                    keep.add(name)
+                    used += need
+            items = [x for x in full if x[0] in keep]
+            chips(height - 1, 0, items, attr['footkey'], attr['foot'], gap=1)
+            if ui['help']:
+                lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 5)'),
+                         ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
+                         ('u', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
+                         ('F5', 'look for apps and updates again'), ('q', 'quit')]
+                bw = min(width - 4, 64)
+                bh = len(lines) + 6
+                by = max(1, (height - bh) // 2)
+                bx = max(1, (width - bw) // 2)
+                for n in range(bh):
+                    put(by + n, bx, ' ' * bw, attr['pop'])
+                put(by, bx, TLR + H * (bw - 2) + TRR, attr['pop'])
+                put(by + bh - 1, bx, BLR + H * (bw - 2) + BRR, attr['pop'])
+                for n in range(1, bh - 1):
+                    put(by + n, bx, V, attr['pop'])
+                    put(by + n, bx + bw - 1, V, attr['pop'])
+                put(by + 1, bx + 3, 'KEYS', attr['pop'] | curses.A_BOLD)
+                for n, (k, text) in enumerate(lines):
+                    put(by + 3 + n, bx + 3, ' ' + k.ljust(max(len(x) for x, _ in lines)) + ' ', attr['chip'])
+                    put(by + 3 + n, bx + 5 + max(len(x) for x, _ in lines) + 2, text, attr['pop'])
+                put(by + bh - 2, bx + 3, 'Plain menu: appstore --plain    Window: appstore --gui', attr['pop'] | dim)
+            stdscr.refresh()
+
+        def fill_row_part(y, x1, x2, a):
+            put(y, x1, ' ' * max(0, x2 - x1 + 1), a)
+
+        def start(task, finish, message):
+            if data['busy']:
+                ui['msg'] = 'Still working: ' + data['busy']
+                return
+            data['busy'] = message
+            ui['msg'] = message
+            def target():
+                try:
+                    result, error = task(), None
+                except Exception as exc:  # worker must report back
+                    result, error = None, str(exc)
+                jobs.put(lambda: (data.__setitem__('busy', None), finish(result, error)))
+            threading.Thread(target=target, daemon=True).start()
+
+        def load_apps(force=False):
+            if OFFLINE:
+                ui['msg'] = 'Offline: browsing needs internet. Run apps still works.'
+                return
+            if data['loaded'] and not force:
+                return
+            def finish(result, error):
+                if error:
+                    ui['msg'] = 'Could not reach GitHub: ' + error
+                else:
+                    data['apps'], data['loaded'] = result, True
+                    ui['msg'] = f'{len(result)} app(s) found.'
+            start(discover, finish, 'Looking for apps...')
+
+        def check_now():
+            if OFFLINE:
+                return
+            def finish(result, error):
+                if error:
+                    ui['msg'] = 'Update check failed: ' + error
+                else:
+                    data['pending'] = result
+                    data['software'] = read_software_records()
+                    ui['msg'] = f'{len(result)} update(s) available.' if result else 'Everything is up to date.'
+            start(lambda: (check_updates(report=False), check_software_changes())[0], finish, 'Checking updates...')
+
+        def outside(task):
+            """Leave the rich view so prompts, installers and apps use the real terminal."""
+            curses.def_prog_mode()
+            curses.endwin()
+            try:
+                task()
+            except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:
+                print('Could not finish: ' + str(exc))
+            except KeyboardInterrupt:
+                print('\nInterrupted. Back in the App Store.')
+            try:
+                input('\nPress Enter to return to the App Store...')
+            except (EOFError, KeyboardInterrupt):
+                pass
+            curses.reset_prog_mode()
+            stdscr.clear()
+            stdscr.refresh()
+            data['software'] = read_software_records()
+
+        def selected_row():
+            return data['rows'][ui['sel']] if data['rows'] else None
+
+        def do_run():
+            row = selected_row()
+            state = load_state()
+            if not row or row['name'] not in state:
+                ui['msg'] = 'Run works on installed apps.'
+                return
+            def task():
+                directory = installed_directory(state[row['name']])
+                print('Running ' + row['name'] + '. Exit the app to return.\n')
+                result = subprocess.run(['bash', MARKER, 'run'], cwd=directory)
+                if result.returncode:
+                    print(f'\n{row["name"]} exited with code {result.returncode}.')
+            outside(task)
+
+        def do_install():
+            row = selected_row()
+            if not row:
+                return
+            if row.get('software'):
+                if OFFLINE:
+                    ui['msg'] = 'Installing software needs internet.'
+                    return
+                name, recipe = row['software']
+                outside(lambda: install_software(name, recipe, lambda text, question: ask(question)))
+                return
+            if not row.get('repo') or OFFLINE:
+                ui['msg'] = 'Open Apps or Games and pick an app to install.' if not OFFLINE else 'Installing needs internet.'
+                return
+            outside(lambda: install(row['repo']))
+            ui['msg'] = 'Back from install.'
+
+        def do_update():
+            row = selected_row()
+            if not row:
+                return
+            pend = row.get('pending') or next((p for p in data['pending'] if p[1] == row['name']), None)
+            if not pend:
+                ui['msg'] = 'No update waiting for that item.'
+                return
+            def task():
+                def confirm(text):
+                    print(text)
+                    return ask('Trust this and update?')
+                if apply_update(pend, confirm):
+                    data['pending'] = [p for p in data['pending'] if p[1] != pend[1]]
+                    print('Updated.' + (' Quit and run appstore again.' if pend[3] is not None else ''))
+            outside(task)
+
+        def act():
+            row = selected_row()
+            if not row:
+                return
+            view = SECTIONS[ui['view']][0]
+            if view == 'updates':
+                do_update()
+            elif view == 'other':
+                do_install()
+            elif row['name'] in load_state():
+                do_run()
+            else:
+                do_install()
+
+        def switch(step=None, index=None):
+            ui['view'] = index if index is not None else (ui['view'] + step) % len(SECTIONS)
+            ui['sel'] = ui['top'] = 0
+            ui['search'] = ''
+            if SECTIONS[ui['view']][0] in ('apps', 'games'):
+                load_apps()
+
+        load_apps()
+        check_now_started = False
+        while True:
+            while True:
+                try:
+                    jobs.get_nowait()()
+                except queue.Empty:
+                    break
+            if not check_now_started and data['loaded'] is not None and not data['busy']:
+                check_now_started = True
+                check_now()
+            draw()
+            key = stdscr.getch()
+            if key == -1:
+                continue
+            if ui['help']:
+                ui['help'] = False
+                continue
+            if ui['typing']:
+                if key in (10, 13, curses.KEY_ENTER, 27):
+                    ui['typing'] = False
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    ui['search'] = ui['search'][:-1]
+                elif 32 <= key < 127:
+                    ui['search'] += chr(key)
+                ui['sel'] = ui['top'] = 0
+                continue
+            count = len(data['rows'])
+            if key in (ord('q'), ord('Q')):
+                return
+            elif key in (curses.KEY_DOWN, ord('j')):
+                ui['sel'] = min(ui['sel'] + 1, max(0, count - 1))
+            elif key in (curses.KEY_UP, ord('k')):
+                ui['sel'] = max(ui['sel'] - 1, 0)
+            elif key == curses.KEY_NPAGE:
+                ui['sel'] = min(ui['sel'] + 8, max(0, count - 1))
+            elif key == curses.KEY_PPAGE:
+                ui['sel'] = max(ui['sel'] - 8, 0)
+            elif key == curses.KEY_HOME:
+                ui['sel'] = 0
+            elif key == curses.KEY_END:
+                ui['sel'] = max(0, count - 1)
+            elif key in (curses.KEY_RIGHT, 9, ord('l')):
+                switch(1)
+            elif key in (curses.KEY_LEFT, curses.KEY_BTAB, ord('h')):
+                switch(-1)
+            elif ord('1') <= key <= ord('5'):
+                switch(index=key - ord('1'))
+            elif key in (10, 13, curses.KEY_ENTER):
+                act()
+            elif key == ord('i'):
+                do_install()
+            elif key == ord('r'):
+                do_run()
+            elif key == ord('u'):
+                do_update()
+            elif key == ord('/'):
+                ui['typing'] = True
+                ui['search'] = ''
+            elif key in (curses.KEY_F5, ord('R')):
+                load_apps(force=True)
+                check_now()
+            elif key == ord('?'):
+                ui['help'] = True
+
+    curses.wrapper(run)
+
+
 def main(argv=None):
     global OFFLINE, UI
     parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps')
     parser.add_argument('--offline', action='store_true', help='run installed apps without network checks')
     parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
+    parser.add_argument('--plain', action='store_true', help='use the plain numbered menu')
     parser.add_argument('--gui', action='store_true', help='open the window (needs python3-tk and a desktop)')
     parser.add_argument('--version', action='version', version='Pi App Store ' + VERSION)
     args = parser.parse_args(argv)
     OFFLINE = args.offline
     if args.gui:
         return gui()
+    if use_rich(args.plain, os.environ, sys.stdin.isatty(), sys.stdout.isatty()):
+        try:
+            tui(no_color=args.no_color)
+            return 0
+        except Exception as exc:  # unusual terminal: fall back instead of failing
+            print('Rich view unavailable (' + str(exc) + '). Using the plain menu.')
     UI = Terminal()
     if args.no_color:
         UI.color = False
