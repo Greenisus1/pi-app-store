@@ -97,3 +97,12 @@ The local file `~/.local/share/pi-app-store/software-changes.json` records each 
 ## Testing
 
 Run `python3 -m unittest -v` from this repository for offline tests. Tests use temporary homes and fake network responses; no apt, Ollama installation or real network is used. Case-variant launch tests execute all 256 launchers. UI preview is checked at 76 and 40 columns. Tested on Linux, not yet on a real Raspberry Pi. Apps requiring hardware or system packages still need their own environment tests.
+
+
+## GitHub rate-limit repair in 1.5.1
+
+No api.github.com requests remain. Public repo discovery reads GitHub's public source-repository HTML pages; default branch is read from repo HTML, and immutable 40-character commits from GitHub Atom feeds. Installer/program/version files use raw.githubusercontent.com; app archives use codeload.github.com at that same commit. Existing marker equality, bounded extraction and root install gate are kept. Other Software upstream-edit checks use HTML/Atom too. No token or gh login needed.
+
+HTML/Atom/raw/codeload still need network and can fail or be throttled separately; this avoids the anonymous REST API quota, not every GitHub outage. HTTP 403/429 gives a clear stop-and-try-later message, no automatic retries; installed apps remain available offline. If HTML/feed format changes the store refuses to guess a branch/commit. Source lists exclude forks, as before. All public marked repos are checked; private repos remain outside discovery. Newest sorting uses latest commit-feed timestamps when available, otherwise falls back to name.
+
+Verified 47 unit tests, live public HTML/Atom/raw/archive read+extraction on Linux; no actual app installer, apt or Pi install in the live test. Physical Raspberry Pi untested. Upgrade from broken older Store: use existing installer download instructions rather than the old API-based in-app update check.
