@@ -106,3 +106,10 @@ No api.github.com requests remain. Public repo discovery reads GitHub's public s
 HTML/Atom/raw/codeload still need network and can fail or be throttled separately; this avoids the anonymous REST API quota, not every GitHub outage. HTTP 403/429 gives a clear stop-and-try-later message, no automatic retries; installed apps remain available offline. If HTML/feed format changes the store refuses to guess a branch/commit. Source lists exclude forks, as before. All public marked repos are checked; private repos remain outside discovery. Newest sorting uses latest commit-feed timestamps when available, otherwise falls back to name.
 
 Verified 47 unit tests, live public HTML/Atom/raw/archive read+extraction on Linux; no actual app installer, apt or Pi install in the live test. Physical Raspberry Pi untested. Upgrade from broken older Store: use existing installer download instructions rather than the old API-based in-app update check.
+
+
+## Light/dark in 1.5.2
+
+Press T in the rich terminal view to toggle light/dark, or use `appstore --theme light` / `appstore --theme dark` to choose the starting palette. Default dark. Plain numbered menu has t for the colored text palette (cannot repaint the terminal's entire background). Optional GUI has a Light/dark button. Theme is session-only; not saved. --no-color/NO_COLOR keeps monochrome behavior and terminal colors can vary. Child apps/installers keep their own palettes; themed store view returns afterward.
+
+53 unit tests, dark/light terminal pixel previews, actual T toggle and GUI button previews checked on Linux. No physical Pi test. No desktop is required: GUI remains optional. Installs keep 1.5.1 no-API fix and root/no-prompt behavior.
