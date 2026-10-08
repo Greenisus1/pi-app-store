@@ -194,14 +194,14 @@ class Tests(unittest.TestCase):
                 item = tarfile.TarInfo('repo/' + name); item.size = len(data)
                 tar.addfile(item, io.BytesIO(data))
         def fetch(url, limit=2_000_000):
-            if '/tarball/' in url: return archive.getvalue()
+            if 'codeload.github.com/' in url: return archive.getvalue()
             if url.endswith(app.VERSION_FILE): return b'{"version":"2.0"}'
             return marker
-        with patch.object(app, 'fetch', side_effect=fetch), patch.object(app, 'api', return_value={'sha': 'pinned'}), patch.object(app, 'can_install', return_value=True), patch('builtins.input', side_effect=AssertionError('no prompt expected')):
+        with patch.object(app, 'fetch', side_effect=fetch), patch.object(app, 'api', return_value={'sha': 'a'*40}), patch.object(app, 'can_install', return_value=True), patch('builtins.input', side_effect=AssertionError('no prompt expected')):
             app.install({'name': 'Demo', 'default_branch': 'main'})
         saved = app.load_state()['Demo']
         self.assertEqual(saved['version'], '2.0')
-        self.assertEqual(saved['commit'], 'pinned')
+        self.assertEqual(saved['commit'], 'a'*40)
         self.assertTrue(Path(saved['directory']).is_dir())
 
     def test_install_needs_root(self):
