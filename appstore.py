@@ -25,15 +25,37 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.5.1'
+VERSION = '1.5.2'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
+THEME = "dark"
 NETWORK_TIMEOUT = 5
 HOME = Path.home() / '.local' / 'share' / 'pi-app-store'
 # Add another apt entry here: ('Display name', ['apt', 'package', ...]).
 SOFTWARE = [('Python 3', ['apt', 'python3', 'python3-pip', 'python3-venv']),
             ('Ollama', ['script', 'https://ollama.com/install.sh']),
             ('Python Tk (python3-tk)', ['apt', 'python3-tk'])]
+
+
+def toggle_theme():
+    global THEME
+    THEME = 'light' if THEME == 'dark' else 'dark'
+    return THEME
+
+
+def theme_palette(pairs, light=False):
+    """Map the existing 8-color terminal palette, with readable explicit backgrounds."""
+    result = dict(pairs)
+    result['base'] = (0, 7) if light else (7, 0)
+    if light:
+        for name, (fg, bg) in list(result.items()):
+            if bg == -1:
+                # Yellow/green/cyan lose contrast on a white background; blue is readable.
+                result[name] = (4 if fg in (2, 3, 6, 7) else fg, 7)
+        result['side'] = (0, 7)
+    else:
+        result = {name: (fg, 0 if bg == -1 else bg) for name, (fg, bg) in result.items()}
+    return result
 
 
 def fetch(url, limit=2_000_000):
@@ -327,7 +349,7 @@ class Terminal:
         text = plain(value)
         for line in textwrap.wrap(text, self.width, replace_whitespace=False) or ['']:
             if self.color and code:
-                line = '\x1b[' + code + 'm' + line + '\x1b[0m'
+                line = '\x1b[' + ('30;47' if THEME == 'light' else code) + 'm' + line + '\x1b[0m'
             print(line, file=self.stream)
 
     def heading(self, title, subtitle=''):
@@ -850,6 +872,26 @@ def gui():
     details.pack(side='bottom', fill='x')
     tree.pack(fill='both', expand=True, padx=14)
 
+    def gui_theme():
+        light = THEME == 'light'
+        bg, fg, surface = ('#f4f5f7', '#17212c', '#ffffff') if light else ('#101a25', '#e3ebed', '#182634')
+        def recolor(widget):
+            if isinstance(widget, (tk.Frame, tk.Label)):
+                widget.config(bg=bg)
+                if isinstance(widget, tk.Label):widget.config(fg=fg)
+            for child in widget.winfo_children():
+                recolor(child)
+        root.config(bg=bg);recolor(root)
+        style.configure('Treeview', background=surface, fieldbackground=surface, foreground=fg)
+        style.configure('Treeview.Heading', background=bg, foreground=fg)
+        style.configure('TButton', background=surface, foreground=fg)
+        style.configure('TEntry', fieldbackground=surface, foreground=fg)
+        for key, button in nav.items():
+            button.config(bg=ACCENT if key == data['view'] else bg, fg=fg)
+    def gui_toggle_theme():
+        toggle_theme();gui_theme()
+    ttk.Button(top, text='Light / dark', command=gui_toggle_theme).pack(side='right')
+
     def say(text):
         status.config(text=text)
 
@@ -922,7 +964,7 @@ def gui():
         data['view'] = view
         path_label.config(text='Pi App Store  >  ' + TITLES[view])
         for key, button in nav.items():
-            button.config(bg=ACCENT if key == view else SIDE)
+            button.config(bg=ACCENT if key == view else ('#f4f5f7' if THEME == 'light' else '#101a25'), fg='#17212c' if THEME == 'light' else '#e3ebed')
         needs_net = view in ('apps', 'games') and (reload or not data['loaded']) and not OFFLINE
         if needs_net:
             def finish(result, error):
@@ -1014,6 +1056,7 @@ def gui():
     tree.bind('<Double-1>', lambda e: (btn['run'].invoke() if str(btn['run'].cget('state')) != 'disabled'
                                        else btn['install'].invoke() if str(btn['install'].cget('state')) != 'disabled' else None))
     search.trace_add('write', lambda *a: fill())
+    gui_theme()
 
     def start_checks():
         def finish(result, error):
@@ -1097,13 +1140,7 @@ def tui(no_color=False):
         stdscr.keypad(True)
         stdscr.timeout(120)
         attr = {}
-        if colors:
-            curses.start_color()
-            try:
-                curses.use_default_colors()
-            except curses.error:
-                pass
-            pairs = {'head': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'sel': (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        base_pairs = {'head': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'sel': (curses.COLOR_BLACK, curses.COLOR_CYAN),
                      'ok': (curses.COLOR_GREEN, -1), 'warn': (curses.COLOR_YELLOW, -1), 'bad': (curses.COLOR_RED, -1),
                      'foot': (curses.COLOR_BLACK, curses.COLOR_WHITE), 'key': (curses.COLOR_YELLOW, curses.COLOR_BLUE),
                      'apps': (curses.COLOR_CYAN, -1), 'games': (curses.COLOR_MAGENTA, -1),
@@ -1113,22 +1150,34 @@ def tui(no_color=False):
                      'pop': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'headdim': (curses.COLOR_WHITE, curses.COLOR_BLUE),
                      'logo0': (curses.COLOR_CYAN, curses.COLOR_BLUE), 'logo1': (curses.COLOR_MAGENTA, curses.COLOR_BLUE),
                      'logo2': (curses.COLOR_GREEN, curses.COLOR_BLUE), 'logo3': (curses.COLOR_YELLOW, curses.COLOR_BLUE)}
-            for number, (name, (fg, bg)) in enumerate(pairs.items(), 1):
+        def apply_theme():
+            attr.clear()
+            if colors:
+                curses.start_color()
                 try:
-                    curses.init_pair(number, fg, bg)
-                    attr[name] = curses.color_pair(number)
+                    curses.use_default_colors()
                 except curses.error:
+                    pass
+                pairs = theme_palette(base_pairs, THEME == 'light')
+                for number, (name, (fg, bg)) in enumerate(pairs.items(), 1):
+                    try:
+                        curses.init_pair(number, fg, bg)
+                        attr[name] = curses.color_pair(number)
+                    except curses.error:
+                        attr[name] = 0
+                attr['head'] |= curses.A_BOLD
+                attr['sel'] |= curses.A_BOLD
+                stdscr.bkgd(' ', attr['base'])
+            else:
+                for name in base_pairs:
                     attr[name] = 0
-            attr['head'] |= curses.A_BOLD
-            attr['sel'] |= curses.A_BOLD
-        else:
-            for name in ('head', 'sel', 'foot', 'key', 'chip', 'footkey', 'headdim'):
-                attr[name] = curses.A_REVERSE
-            for name in ('logo0', 'logo1', 'logo2', 'logo3'):
-                attr[name] = curses.A_REVERSE | curses.A_BOLD
-            attr['pop'] = curses.A_REVERSE
-            for name in ('ok', 'warn', 'bad', 'apps', 'games', 'installed', 'updates', 'other', 'side'):
-                attr[name] = curses.A_BOLD if name in ('ok', 'warn', 'bad') else 0
+                attr['base'] = 0
+                for name in ('head', 'sel', 'foot', 'key', 'chip', 'footkey', 'headdim', 'pop'):
+                    attr[name] = curses.A_REVERSE
+                for name in ('logo0', 'logo1', 'logo2', 'logo3'):
+                    attr[name] = curses.A_REVERSE | curses.A_BOLD
+            stdscr.clear()
+        apply_theme()
         dim = curses.A_DIM
 
         def put(y, x, text, a=0):
@@ -1136,6 +1185,8 @@ def tui(no_color=False):
             if y < 0 or y >= height or x >= width:
                 return
             text = plain(text)[:max(0, width - x - (1 if y == height - 1 else 0))]
+            if a == 0:
+                a = attr.get('base', 0)
             try:
                 stdscr.addstr(y, x, text, a)
             except curses.error:
@@ -1333,8 +1384,8 @@ def tui(no_color=False):
             fill_row(height - 1, attr['foot'])
             full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
                     ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('/', 'search'), ('s', 'sort'),
-                    ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
-            priority = ['Enter', 'q', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
+                    ('t', 'theme'), ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
+            priority = ['Enter', 'q', 't', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
             keep, used = set(), 0
             for name in priority:
                 label = next(x for x in full if x[0] == name)
@@ -1348,7 +1399,7 @@ def tui(no_color=False):
                 lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 5)'),
                          ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
                          ('u', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
-                         ('s', 'change sort order (Apps and Games)'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
+                         ('s', 'change sort order (Apps and Games)'), ('t', 'toggle light/dark theme'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
                 bw = min(width - 4, 64)
                 bh = len(lines) + 6
                 by = max(1, (height - bh) // 2)
@@ -1563,6 +1614,8 @@ def tui(no_color=False):
                 do_run()
             elif key == ord('u'):
                 do_update()
+            elif key in (ord('t'), ord('T')):
+                toggle_theme(); apply_theme(); ui['msg'] = THEME.title() + ' theme'
             elif key == ord('s') and SECTIONS[ui['view']][0] in ('apps', 'games'):
                 ui['sort'] = (ui['sort'] + 1) % len(SORTS)
                 ui['sel'] = ui['top'] = 0
@@ -1580,15 +1633,17 @@ def tui(no_color=False):
 
 
 def main(argv=None):
-    global OFFLINE, UI
+    global OFFLINE, UI, THEME
     parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps')
     parser.add_argument('--offline', action='store_true', help='run installed apps without network checks')
     parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
     parser.add_argument('--plain', action='store_true', help='use the plain numbered menu')
     parser.add_argument('--gui', action='store_true', help='open the window (needs python3-tk and a desktop)')
+    parser.add_argument('--theme', choices=('dark', 'light'), default='dark', help='initial color theme; T toggles in rich view')
     parser.add_argument('--version', action='version', version='Pi App Store ' + VERSION)
     args = parser.parse_args(argv)
     OFFLINE = args.offline
+    THEME = args.theme
     if args.gui:
         return gui()
     if use_rich(args.plain, os.environ, sys.stdin.isatty(), sys.stdout.isatty()):
@@ -1628,11 +1683,15 @@ def main(argv=None):
                      '  2  Run apps        Launch installed apps',
                      '  3  Other software  Python, Ollama',
                      '  4  Updates         Review available updates',
+                     '  t  Theme          Light/dark toggle',
                      '  0  Quit'):
             UI.write(line)
         UI.write()
         try:
             choice = input('Choose a number: ').strip()
+            if choice.lower() == 't':
+                toggle_theme()
+                continue
             if choice == '0':
                 UI.write('Goodbye.')
                 return
