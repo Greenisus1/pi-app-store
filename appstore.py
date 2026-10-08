@@ -23,7 +23,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.4.0'
+VERSION = '1.4.1'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 NETWORK_TIMEOUT = 5
@@ -951,6 +951,19 @@ def gui():
     return 0
 
 
+SORTS = [('newest', 'Newest first'), ('az', 'A-Z'), ('za', 'Z-A')]
+
+
+def sort_apps(rows, mode):
+    """Pure helper: order app rows. Newest uses the repo's last push, then creation date."""
+    if mode == 'az':
+        return sorted(rows, key=lambda r: r['name'].casefold())
+    if mode == 'za':
+        return sorted(rows, key=lambda r: r['name'].casefold(), reverse=True)
+    by_name = sorted(rows, key=lambda r: r['name'].casefold())
+    return sorted(by_name, key=lambda r: ((r.get('repo') or {}).get('pushed_at') or (r.get('repo') or {}).get('created_at') or ''), reverse=True)
+
+
 SECTIONS = [('apps', 'Apps'), ('games', 'Games'), ('installed', 'Run apps'),
             ('updates', 'Updates'), ('other', 'Other software')]
 
@@ -990,7 +1003,7 @@ def tui(no_color=False):
     TLR, TRR, BLR, BRR = ('\u256d', '\u256e', '\u2570', '\u256f') if utf8 else ('+', '+', '+', '+')
     data = {'apps': [], 'pending': [], 'loaded': False, 'busy': None, 'rows': [], 'software': {}}
     jobs = queue.Queue()
-    ui = {'view': 0, 'sel': 0, 'top': 0, 'search': '', 'typing': False, 'msg': '', 'help': False}
+    ui = {'view': 0, 'sel': 0, 'top': 0, 'search': '', 'typing': False, 'msg': '', 'help': False, 'sort': 0}
 
     def run(stdscr):
         colors = curses.has_colors() and not no_color and 'NO_COLOR' not in os.environ
@@ -1053,7 +1066,10 @@ def tui(no_color=False):
             needle = ui['search'].strip().lower()
             found = build_rows(key, data['apps'], load_state(), data['pending'],
                                data['software'] if key == 'other' else None)
-            return [r for r in found if needle in (r['name'] + ' ' + r['desc']).lower()]
+            found = [r for r in found if needle in (r['name'] + ' ' + r['desc']).lower()]
+            if key in ('apps', 'games'):
+                found = sort_apps(found, SORTS[ui['sort']][0])
+            return found
 
         def badge(status):
             if 'update' in status:
@@ -1146,15 +1162,25 @@ def tui(no_color=False):
             put(head_y, x0 + 1, title.upper(), curses.A_BOLD)
             total = f'{len(found)}' if found else ''
             put(head_y, x0 + 2 + len(title), total, dim)
+            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (s)' if key in ('apps', 'games') else ''
             hint = ('/ ' + ui['search'] + ('_' if ui['typing'] else '')) if (ui['search'] or ui['typing']) else 'press / to search'
-            put(head_y, max(x0 + len(title) + 8, width - len(hint) - 2), hint, attr['warn'] if ui['typing'] or ui['search'] else dim)
+            if sort_label:
+                put(head_y, x0 + len(title) + len(total) + 5, sort_label, attr['warn'])
+            put(head_y, max(x0 + len(title) + len(total) + 7 + len(sort_label), width - len(hint) - 2), hint, attr['warn'] if ui['typing'] or ui['search'] else dim)
             put(head_y + 1, x0 + 1, H * max(0, span - 2), dim)
             col_y = head_y + 2
             name_w = max(14, min(30, span // 3))
             stat_w = max(12, min(20, span // 4))
             put(col_y, x0 + 3, 'NAME'.ljust(name_w + 2) + 'STATUS'.ljust(stat_w + 2) + 'DESCRIPTION', dim | curses.A_BOLD)
             body_top = col_y + 1
-            panel_h = 6 if height >= 24 else 4
+            cur0 = found[ui['sel']] if found else None
+            wanted = len(textwrap.wrap(plain(cur0['desc'] or 'No description.'), max(10, span - 6)) or ['']) if cur0 else 1
+            cap = 6 if height >= 36 else 4 if height >= 30 else 3 if height >= 26 else 2 if height >= 24 else 1
+            desc_lines = min(wanted, cap)
+            panel_h = 4 + desc_lines
+            if ui.get('ph') != panel_h:
+                ui['ph'] = panel_h
+                stdscr.clearok(True)
             body_h = height - body_top - panel_h - 2
             if ui['sel'] < ui['top']:
                 ui['top'] = ui['sel']
@@ -1203,10 +1229,11 @@ def tui(no_color=False):
                 inner = span - 6
                 put(box_y + 1, x0 + 3, DOT + ' ' + ellipsize(cur['status'], inner - 2), badge(cur['status']) | curses.A_BOLD)
                 text_rows = textwrap.wrap(plain(cur['desc'] or 'No description.'), max(10, inner)) or ['']
-                if panel_h >= 6:
-                    for n, part in enumerate(text_rows[:2]):
-                        put(box_y + 2 + n, x0 + 3, ellipsize(part, inner) if n == 1 and len(text_rows) > 2 else part, 0)
-                    action_y = box_y + 4
+                if cap:
+                    for n, part in enumerate(text_rows[:desc_lines]):
+                        last = n == desc_lines - 1 and len(text_rows) > desc_lines
+                        put(box_y + 2 + n, x0 + 3, ellipsize(part + ' ...' if last else part, inner), 0)
+                    action_y = box_y + 2 + desc_lines
                 else:
                     action_y = box_y + 2
                 installed_now = cur['name'] in load_state()
@@ -1222,9 +1249,9 @@ def tui(no_color=False):
             put(height - 2, 1, (' ' + ellipsize(ui['msg'], width - 4)) if ui['msg'] else ' ', attr['warn'] if ui['msg'] else dim)
             fill_row(height - 1, attr['foot'])
             full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
-                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('/', 'search'),
+                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('/', 'search'), ('s', 'sort'),
                     ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
-            priority = ['Enter', 'q', '?', 'i', 'r', 'u', '/', full[0][0], full[1][0], 'F5']
+            priority = ['Enter', 'q', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
             keep, used = set(), 0
             for name in priority:
                 label = next(x for x in full if x[0] == name)
@@ -1238,7 +1265,7 @@ def tui(no_color=False):
                 lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 5)'),
                          ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
                          ('u', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
-                         ('F5', 'look for apps and updates again'), ('q', 'quit')]
+                         ('s', 'change sort order (Apps and Games)'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
                 bw = min(width - 4, 64)
                 bh = len(lines) + 6
                 by = max(1, (height - bh) // 2)
@@ -1447,6 +1474,10 @@ def tui(no_color=False):
                 do_run()
             elif key == ord('u'):
                 do_update()
+            elif key == ord('s') and SECTIONS[ui['view']][0] in ('apps', 'games'):
+                ui['sort'] = (ui['sort'] + 1) % len(SORTS)
+                ui['sel'] = ui['top'] = 0
+                ui['msg'] = 'Sorted: ' + SORTS[ui['sort']][1]
             elif key == ord('/'):
                 ui['typing'] = True
                 ui['search'] = ''
