@@ -23,7 +23,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.4.1'
+VERSION = '1.5.0'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 NETWORK_TIMEOUT = 5
@@ -174,7 +174,18 @@ def extract(data, dest):
                 raise ValueError('Archive contains a link or special file')
 
 
+NEED_SUDO = 'Installing needs root. Quit and rerun with: sudo appstore'
+
+
+def can_install():
+    """Installs and downloads only work when the store runs as root (for example sudo appstore)."""
+    return os.geteuid() == 0
+
+
 def install(repo, selected_commit=None, confirm=None):
+    if not can_install():
+        print(NEED_SUDO)
+        return
     name = repo['name']
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..'):
         raise ValueError('Invalid repository name')
@@ -190,12 +201,7 @@ def install(repo, selected_commit=None, confirm=None):
     version = remote_version(name, commit)
     print(f'\nInstall {OWNER}/{name} at {commit[:12]}')
     print('App version: ' + (version or 'legacy commit tracking'))
-    print('Installer to review:\n' + marker.decode())
-    print('This script can change files and run commands with your current privileges.')
-    if os.geteuid() == 0:
-        print('WARNING: you are root. The installer will have full system access.')
-    if not (confirm(marker.decode()) if confirm else ask('Trust this installer and install?')):
-        return
+    print('Running its installer (app-store.sh install) as root.')
     HOME.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=HOME) as tmp:
         stage = Path(tmp) / 'app'
@@ -425,35 +431,23 @@ def software_status(name):
     return 'unknown'
 
 
-def install_software(name, recipe, confirm):
-    prefix = [] if os.geteuid() == 0 else ['sudo']
-    if prefix and not shutil.which('sudo'):
-        raise ValueError('Run as root or install sudo first')
+def install_software(name, recipe, confirm=None):
+    if not can_install():
+        print(NEED_SUDO)
+        return False
     if recipe[0] == 'apt':
-        message = 'Will refresh apt and install: ' + ', '.join(recipe[1:])
-        print(message)
-        if confirm(message, 'Install ' + name + '?'):
-            subprocess.run(prefix + ['apt-get', 'update'], check=True)
-            subprocess.run(prefix + ['apt-get', 'install', '-y'] + recipe[1:], check=True)
-            return True
-    else:
-        print('Official installer: ' + recipe[1])
-        print('This installs a system service and may download large files.')
-        if not shutil.which('wget'):
-            raise ValueError('Install wget first')
-        if confirm('Official installer: ' + recipe[1] + '\nThis installs a system service and may download large files.',
-                   'Download the Ollama installer for review?'):
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / 'install.sh'
-                subprocess.run(['wget', '-O', str(path), recipe[1]], check=True)
-                text = path.read_text()
-                print(text)
-                print('The upstream installer may use curl internally.')
-                if confirm(text + '\nThe upstream installer may use curl internally.',
-                           'Run this official installer with system privileges?'):
-                    subprocess.run(prefix + ['sh', str(path)], check=True)
-                    return True
-    return False
+        print('Installing with apt: ' + ', '.join(recipe[1:]))
+        subprocess.run(['apt-get', 'update'], check=True)
+        subprocess.run(['apt-get', 'install', '-y'] + recipe[1:], check=True)
+        return True
+    print('Running the official installer: ' + recipe[1])
+    if not shutil.which('wget'):
+        raise ValueError('Install wget first')
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'install.sh'
+        subprocess.run(['wget', '-O', str(path), recipe[1]], check=True)
+        subprocess.run(['sh', str(path)], check=True)
+    return True
 
 
 def other():
@@ -553,9 +547,10 @@ def updates(pending):
     label, name, commit, source = pending[choice]
     if source is not None:
         print('Update source: ' + raw(name, commit, 'appstore.py'))
-        print('This replaces the App Store program. Restart with AppStore afterward.')
-        if not ask('Trust this repository and update App Store?'):
+        if not can_install():
+            print(NEED_SUDO)
             return
+        print('This replaces the App Store program. Restart with AppStore afterward.')
         compile(source, 'appstore.py', 'exec')
         target = Path(__file__).resolve()
         tmp = target.with_suffix('.update.tmp')
@@ -627,11 +622,12 @@ def terminal_command(directory):
     return None
 
 
-def apply_update(row, confirm):
+def apply_update(row, confirm=None):
     label, name, commit, source = row
+    if not can_install():
+        print(NEED_SUDO)
+        return False
     if source is not None:
-        if not confirm('Replace the App Store program with the version from ' + raw(name, commit, 'appstore.py') + '?'):
-            return False
         compile(source, 'appstore.py', 'exec')
         target = Path(__file__).resolve()
         tmp = target.with_suffix('.update.tmp')
@@ -872,6 +868,9 @@ def gui():
 
     def do_install():
         row = selected()
+        if not can_install():
+            say(NEED_SUDO)
+            return
         if row and row.get('software'):
             name, recipe = row['software']
             def work_software():
@@ -908,6 +907,9 @@ def gui():
     def do_update():
         row = selected()
         if not row:
+            return
+        if not can_install():
+            say(NEED_SUDO)
             return
         pend = row.get('pending') or next((p for p in data['pending'] if p[1] == row['name']), None)
         if not pend:
@@ -1372,10 +1374,16 @@ def tui(no_color=False):
                     ui['msg'] = 'Installing software needs internet.'
                     return
                 name, recipe = row['software']
+                if not can_install():
+                    ui['msg'] = NEED_SUDO
+                    return
                 outside(lambda: install_software(name, recipe, lambda text, question: ask(question)))
                 return
             if not row.get('repo') or OFFLINE:
                 ui['msg'] = 'Open Apps or Games and pick an app to install.' if not OFFLINE else 'Installing needs internet.'
+                return
+            if not can_install():
+                ui['msg'] = NEED_SUDO
                 return
             outside(lambda: install(row['repo']))
             ui['msg'] = 'Back from install.'
@@ -1388,11 +1396,11 @@ def tui(no_color=False):
             if not pend:
                 ui['msg'] = 'No update waiting for that item.'
                 return
+            if not can_install():
+                ui['msg'] = NEED_SUDO
+                return
             def task():
-                def confirm(text):
-                    print(text)
-                    return ask('Trust this and update?')
-                if apply_update(pend, confirm):
+                if apply_update(pend):
                     data['pending'] = [p for p in data['pending'] if p[1] != pend[1]]
                     print('Updated.' + (' Quit and run appstore again.' if pend[3] is not None else ''))
             outside(task)
