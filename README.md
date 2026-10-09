@@ -128,6 +128,8 @@ Other software adds Lua5.4, apt-rdepends and official rpi-imager. Guarded flash:
 84 tests pass including packaging, preferences, startup rollback, catalog-empty handling and mocked flasher/boot checks. Actual Linux terminal-login PTY and dark/light GUI scroll-list pixels inspected. Hardware flashing, real boot service and Raspberry Pi hardware remain untested. No user's boot/profile toggles enabled by this release. Settings/features do not prove installed on the user's Pi until they update.
 
 
-## Version1.6.1: Beta apps
+## Version1.6.2: Beta apps
 
 Beta is separate from Apps/Games in GUI sidebar, rich3 shortcut and plain Browse. Marker # pi-app-store-category: beta in first5 lines. Root Beta install still asks review confirmation. Beta apps remain in Run apps/Updates after install. Experimental apps may be unstable; read their README limits.87 Linux tests and actual GUI/rich Beta visuals checked. No Raspberry Pi hardware test. No force-update or download-fallback changes in this release.
+
+1.6.2 adds a separate Learning games category in plain/rich/GUI views. Category marker learning-games stays outside Apps/Games/Beta. No force-update, fallback mirror or description-suppression changes included.
