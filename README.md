@@ -133,3 +133,9 @@ Other software adds Lua5.4, apt-rdepends and official rpi-imager. Guarded flash:
 Beta is separate from Apps/Games in GUI sidebar, rich3 shortcut and plain Browse. Marker # pi-app-store-category: beta in first5 lines. Root Beta install still asks review confirmation. Beta apps remain in Run apps/Updates after install. Experimental apps may be unstable; read their README limits.87 Linux tests and actual GUI/rich Beta visuals checked. No Raspberry Pi hardware test. No force-update or download-fallback changes in this release.
 
 1.6.2 adds a separate Learning games category in plain/rich/GUI views. Category marker learning-games stays outside Apps/Games/Beta. No force-update, fallback mirror or description-suppression changes included.
+
+## Version 1.7.0
+
+Updates has an Update all button in the optional GUI, an A keyboard action in the rich terminal, and an Update all option in the plain menu. The batch asks for confirmation, keeps each app installer review, reports successes/failures separately, retains failed or cancelled updates, and updates the Store itself last. This does not automatically update installed apps. Restart the Store after its own code update.
+
+Games has a 3D games child listing (marker category games-3d). Terminal and optional Tk GUI layouts checked on Linux, with 95 tests. Physical Raspberry Pi and non-Linux systems remain untested.
