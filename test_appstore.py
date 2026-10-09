@@ -175,7 +175,7 @@ class Tests(unittest.TestCase):
 
     def test_update_pinned(self):
         pending = [('Demo', 'Demo', 'reviewed', None)]
-        with patch('builtins.input', return_value='1'), patch.object(app, 'api', return_value={'name': 'Demo'}), patch.object(app, 'install') as install:
+        with patch('builtins.input', return_value='2'), patch.object(app, 'api', return_value={'name': 'Demo'}), patch.object(app, 'install') as install:
             app.updates(pending)
         install.assert_called_once_with({'name': 'Demo'}, selected_commit='reviewed')
 
@@ -299,7 +299,7 @@ class Tests(unittest.TestCase):
         self.assertFalse(app.use_rich(False, {}, True, True))
         self.assertEqual(app.ellipsize('abcdef', 4), 'abc\u2026')
         self.assertEqual(app.ellipsize('ab\x1b[31m', 20).count('\x1b'), 0)
-        self.assertEqual([k for k, _ in app.SECTIONS], ['apps', 'games', 'installed', 'updates', 'other'])
+        self.assertEqual([k for k, _ in app.SECTIONS], ['apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'])
         self.assertEqual(app.read_software_records(), {})
 
 
