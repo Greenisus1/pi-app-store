@@ -62,7 +62,7 @@ Discovery only reads markers; it does not run them. After choosing an app, the s
 
 Because there is no approval step, installs, software installs and updates all need root (`sudo appstore`); browsing and searching work without it. The installer can call other files or the network. Review the repository too if you do not trust it. On DietPi's root account, installers and apps run as root and have full system access. There is no sandbox. Package installations may affect the system; this store does not roll them back.
 
-Files and the installed list are stored under `~/.local/share/pi-app-store/`. Apps launch from their saved commit without downloading a new version. To update, choose Updates or browse and install again. Old commit folders remain; there is no uninstall menu in this first version. Deleting a folder does not undo a system package installation.
+Files and the installed list are stored under `~/.local/share/pi-app-store/`. Apps launch from their saved commit without downloading a new version. To update, choose Updates or browse and install again. Old commit folders remain unless you uninstall the selected current checkout. Press u on a selected installed app to review uninstall; external files and system packages are kept.
 
 Downloads are bounded: 40 MB compressed, 100 MB extracted, at most 5,000 archive entries, and at most 20 MB per file. Very large apps need a different installer. Discovery and version checks use public HTML/Atom/raw/codeload, not the REST API quota. Errors are reported without pretending the catalog is empty. Refresh with GUI Refresh, rich F5/R or plain R.
 
@@ -139,3 +139,7 @@ Beta is separate from Apps/Games in GUI sidebar, rich3 shortcut and plain Browse
 Updates has an Update all button in the optional GUI, an A keyboard action in the rich terminal, and an Update all option in the plain menu. The batch asks for confirmation, keeps each app installer review, reports successes/failures separately, retains failed or cancelled updates, and updates the Store itself last. This does not automatically update installed apps. Restart the Store after its own code update.
 
 Games has a 3D games child listing (marker category games-3d). Terminal and optional Tk GUI layouts checked on Linux, with 95 tests. Physical Raspberry Pi and non-Linux systems remain untested.
+
+## 1.7.1 selection controls
+
+Updates now includes a selectable Update all entry, alongside the existing A action. Lowercase s opens Settings and o changes sort order. Lowercase u uninstalls the selected installed Store app after confirmation; uppercase U updates it. Uninstall removes only its Store checkout and installed record, not system packages or files outside its checkout. Optional GUI also has an Uninstall button.
