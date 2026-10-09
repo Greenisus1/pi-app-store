@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.6.2'
+VERSION = '1.7.0'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 THEME = "dark"
@@ -897,9 +897,13 @@ def updates(pending):
         return
     if not pending:
         return
-    choice = choose('Updates', [row[0] for row in pending])
+    choice = choose('Updates', ['Update all'] + [row[0] for row in pending])
     if choice is None:
         return
+    if choice == 0:
+        update_all(pending)
+        return
+    choice -= 1
     label, name, commit, source = pending[choice]
     if source is not None:
         print('Update source: ' + raw(name, commit, 'appstore.py'))
@@ -925,10 +929,10 @@ def build_rows(view, apps, state, pending, software=None):
     """Pure helper for the window: list rows for one section. No network, no Tk."""
     waiting = {row[1] for row in pending}
     rows = []
-    if view in ('apps', 'games', 'learning-games', 'beta'):
+    if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
         for repo in apps:
             category=repo.get('category','apps')
-            group=category if category in ('games','learning-games','beta') else 'apps'
+            group=category if category in ('games','games-3d','learning-games','beta') else 'apps'
             if group != view:
                 continue
             name = repo['name']
@@ -993,6 +997,33 @@ def apply_update(row, confirm=None):
         return True
     install(api(f'repos/{OWNER}/{name}'), selected_commit=commit, confirm=confirm)
     return load_state().get(name, {}).get('commit') == commit
+
+
+def update_all(pending, confirm=None):
+    """Snapshot pending updates; preserve per-app review and failed/cancelled rows."""
+    results = []
+    if not can_install():
+        print(NEED_SUDO)
+        return results
+    if not pending:
+        print('No updates waiting.')
+        return results
+    if not (confirm('Update all '+str(len(pending))+' pending items? Each app keeps its installer review. Failed/cancelled items remain pending.') if confirm else ask('Update all '+str(len(pending))+' pending items? Each app keeps its installer review.')):
+        return results
+    # Store self-update last. The running process continues using this version.
+    snapshot = sorted(list(pending), key=lambda row: row[3] is not None)
+    for row in snapshot:
+        try:
+            ok = apply_update(row, confirm)
+            message = 'updated' if ok else 'cancelled or failed'
+        except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:
+            ok = False
+            message = 'failed: '+str(exc)
+        results.append((row[1], ok, message))
+        print(row[1]+': '+message)
+        if ok and row in pending:
+            pending.remove(row)
+    return results
 
 
 def gui():
@@ -1116,7 +1147,7 @@ def gui():
     bar.pack(fill='x', padx=14, pady=(0, 8))
     btn = {}
     for key, text, style_name in (('install', 'Install', 'Accent.TButton'), ('run', 'Run', 'Accent.TButton'),
-                                  ('term', 'Run in terminal', 'TButton'), ('update', 'Update', 'Accent.TButton')):
+                                  ('term', 'Run in terminal', 'TButton'), ('update', 'Update', 'Accent.TButton'), ('all', 'Update all', 'Accent.TButton')):
         btn[key] = ttk.Button(bar, text=text, style=style_name, state='disabled')
         btn[key].pack(side='left', padx=(0, 8))
     status = tk.Label(root, text='', bg='#e6e8ec', fg='#333', anchor='w', padx=10)
@@ -1219,16 +1250,18 @@ def gui():
         row = selected()
         for button in btn.values():
             button.state(['disabled'])
+        if data['view'] == 'updates' and data['pending'] and not OFFLINE and not data['busy']:
+            btn['all'].state(['!disabled'])
         if not row:
             details.config(text='Pick something from the list.')
             return
         details.config(text=row['name'] + '\n' + row['status'] + (' - ' + row['desc'] if row['desc'] else ''))
         view = data['view']
-        if view in ('apps', 'games', 'learning-games', 'beta') and not OFFLINE:
+        if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and not OFFLINE:
             btn['install'].state(['!disabled'])
         if view == 'other' and row.get('software') and not OFFLINE:
             btn['install'].state(['!disabled'])
-        if row['installed'] and view in ('apps', 'games', 'installed') and row['name'] in load_state():
+        if row['installed'] and view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed') and row['name'] in load_state():
             btn['run'].state(['!disabled'])
             if terminal_command(Path('.')):
                 btn['term'].state(['!disabled'])
@@ -1250,7 +1283,7 @@ def gui():
         for index, row in enumerate(rows):
             tree.insert('', 'end', iid=str(index), text='  ' + row['name'], values=(row['status'], row['desc']))
         if not rows:
-            empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
+            empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
                      'updates': 'No updates waiting.', 'other': 'No recorded checks yet.'}[data['view']]
             tree.insert('', 'end', iid='empty', text='  ' + empty)
         update_buttons()
@@ -1273,7 +1306,7 @@ def gui():
         data['busy'] = False
         say(message)
 
-    TITLES = {'apps': 'Apps', 'games': 'Games', 'learning-games':'Learning games', 'beta':'Beta', 'installed': 'Run apps', 'other': 'Other software',
+    TITLES = {'apps': 'Apps', 'games': 'Games', 'games-3d': 'Games / 3D games', 'learning-games':'Learning games', 'beta':'Beta', 'installed': 'Run apps', 'other': 'Other software',
               'updates': 'Updates'}
 
     def show(view, reload=False):
@@ -1281,7 +1314,7 @@ def gui():
         path_label.config(text='Pi App Store  >  ' + TITLES[view])
         for key, button in nav.items():
             button.config(bg=ACCENT if key == view else ('#f4f5f7' if THEME == 'light' else '#101a25'), fg='#17212c' if THEME == 'light' else '#e3ebed')
-        needs_net = view in ('apps', 'games', 'learning-games', 'beta') and (reload or not data['loaded']) and not OFFLINE
+        needs_net = view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and (reload or not data['loaded']) and not OFFLINE
         if needs_net:
             def finish(result, error):
                 if error:
@@ -1294,11 +1327,11 @@ def gui():
             background(discover, finish, 'Looking for apps...')
         else:
             fill()
-            if view in ('apps', 'games', 'learning-games', 'beta') and OFFLINE:
+            if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and OFFLINE:
                 say('Offline: browsing needs internet. Run apps still works.')
 
     nav = {}
-    for key in ('apps', 'games', 'learning-games', 'beta', 'installed', 'updates', 'other'):
+    for key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'):
         button = tk.Button(side, text='   ' + TITLES[key], anchor='w', bg=SIDE, fg=SIDE_TXT, activebackground='#3a3f48',
                            activeforeground='white', relief='flat', bd=0, padx=10, pady=9, font=('TkDefaultFont', 10),
                            command=lambda k=key: show(k))
@@ -1364,6 +1397,14 @@ def gui():
             fill()
         background(lambda: apply_update(pend, confirm), finish, 'Updating...')
 
+    def do_update_all():
+        if data['view'] != 'updates' or not data['pending'] or data['busy']:
+            return
+        def finish(result, error):
+            done_with('Update all stopped: '+error if error else 'Update all finished. '+str(sum(r[1] for r in result))+' updated; '+str(len(data['pending']))+' still pending. Restart if Store changed.')
+            fill()
+        background(lambda: update_all(data['pending'], confirm), finish, 'Updating all... per-app reviews still apply')
+    btn['all'].config(command=do_update_all)
     btn['install'].config(command=do_install)
     btn['run'].config(command=do_run)
     btn['term'].config(command=lambda: do_run(True))
@@ -1406,7 +1447,7 @@ def sort_apps(rows, mode):
     return sorted(by_name, key=lambda r: ((r.get('repo') or {}).get('pushed_at') or (r.get('repo') or {}).get('created_at') or ''), reverse=True)
 
 
-SECTIONS = [('apps', 'Apps'), ('games', 'Games'), ('learning-games','Learning games'), ('beta','Beta'), ('installed', 'Run apps'),
+SECTIONS = [('apps', 'Apps'), ('games', 'Games'), ('games-3d', '  3D games'), ('learning-games','Learning games'), ('beta','Beta'), ('installed', 'Run apps'),
             ('updates', 'Updates'), ('other', 'Other software')]
 
 
@@ -1460,7 +1501,7 @@ def tui(no_color=False):
                      'ok': (curses.COLOR_GREEN, -1), 'warn': (curses.COLOR_YELLOW, -1), 'bad': (curses.COLOR_RED, -1),
                      'foot': (curses.COLOR_BLACK, curses.COLOR_WHITE), 'key': (curses.COLOR_YELLOW, curses.COLOR_BLUE),
                      'apps': (curses.COLOR_CYAN, -1), 'games': (curses.COLOR_MAGENTA, -1),
-                     'learning-games': (curses.COLOR_CYAN,-1), 'beta': (curses.COLOR_MAGENTA,-1), 'installed': (curses.COLOR_GREEN, -1), 'updates': (curses.COLOR_YELLOW, -1),
+                     'games-3d': (curses.COLOR_GREEN,-1), 'learning-games': (curses.COLOR_CYAN,-1), 'beta': (curses.COLOR_MAGENTA,-1), 'installed': (curses.COLOR_GREEN, -1), 'updates': (curses.COLOR_YELLOW, -1),
                      'other': (curses.COLOR_BLUE, -1), 'side': (curses.COLOR_WHITE, curses.COLOR_BLACK),
                      'footkey': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'chip': (curses.COLOR_BLACK, curses.COLOR_YELLOW),
                      'pop': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'headdim': (curses.COLOR_WHITE, curses.COLOR_BLUE),
@@ -1517,7 +1558,7 @@ def tui(no_color=False):
             found = build_rows(key, data['apps'], load_state(), data['pending'],
                                data['software'] if key == 'other' else None)
             found = [r for r in found if needle in (r['name'] + ' ' + r['desc']).lower()]
-            if key in ('apps', 'games', 'learning-games', 'beta'):
+            if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                 found = sort_apps(found, SORTS[ui['sort']][0])
             return found
 
@@ -1543,9 +1584,9 @@ def tui(no_color=False):
 
         def counts():
             state = load_state()
-            apps_n = sum(1 for r in data['apps'] if r.get('category') not in ('games','learning-games','beta'))
+            apps_n = sum(1 for r in data['apps'] if r.get('category') not in ('games','games-3d','learning-games','beta'))
             games_n = sum(1 for r in data['apps'] if r.get('category') == 'games')
-            return {'apps': apps_n if data['loaded'] else None, 'games': games_n if data['loaded'] else None, 'learning-games':sum(1 for r in data['apps'] if r.get('category')=='learning-games') if data['loaded'] else None, 'beta':sum(1 for r in data['apps'] if r.get('category')=='beta') if data['loaded'] else None,
+            return {'apps': apps_n if data['loaded'] else None, 'games': games_n if data['loaded'] else None, 'games-3d':sum(1 for r in data['apps'] if r.get('category')=='games-3d') if data['loaded'] else None, 'learning-games':sum(1 for r in data['apps'] if r.get('category')=='learning-games') if data['loaded'] else None, 'beta':sum(1 for r in data['apps'] if r.get('category')=='beta') if data['loaded'] else None,
                     'installed': len(state), 'updates': len(data['pending']), 'other': len(SOFTWARE)}
 
         def draw():
@@ -1612,7 +1653,7 @@ def tui(no_color=False):
             put(head_y, x0 + 1, title.upper(), curses.A_BOLD)
             total = f'{len(found)}' if found else ''
             put(head_y, x0 + 2 + len(title), total, dim)
-            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (s)' if key in ('apps', 'games', 'learning-games', 'beta') else ''
+            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (s)' if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta') else ''
             hint = ('/ ' + ui['search'] + ('_' if ui['typing'] else '')) if (ui['search'] or ui['typing']) else 'press / to search'
             if sort_label:
                 put(head_y, x0 + len(title) + len(total) + 5, sort_label, attr['warn'])
@@ -1637,12 +1678,12 @@ def tui(no_color=False):
             if ui['sel'] >= ui['top'] + body_h:
                 ui['top'] = max(0, ui['sel'] - body_h + 1)
             if not found:
-                empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
+                empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
                          'updates': 'Everything is up to date.', 'other': 'No recorded checks yet.'}[key]
-                tip = {'apps': 'Press F5 to look again.', 'games': 'New games appear here automatically.', 'learning-games':'Learning quizzes and educational games.', 'beta':'Experimental apps. Review limitations before install.',
+                tip = {'apps': 'Press F5 to look again.', 'games': 'New games appear here automatically.', 'games-3d': 'Inside Games: first-person and other 3D games.', 'learning-games':'Learning quizzes and educational games.', 'beta':'Experimental apps. Review limitations before install.',
                        'installed': 'Open Apps or Games and press Enter on one.', 'updates': 'Updates show up here.',
                        'other': 'Needs internet for the first check.'}[key]
-                if data['busy'] and key in ('apps', 'games', 'learning-games', 'beta'):
+                if data['busy'] and key in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                     empty, tip = 'Looking for apps...', 'Checking GitHub.'
                 put(body_top + 1, x0 + 3, empty, curses.A_BOLD)
                 put(body_top + 2, x0 + 3, tip, dim)
@@ -1688,7 +1729,7 @@ def tui(no_color=False):
                     action_y = box_y + 2
                 installed_now = cur['name'] in load_state()
                 if key == 'updates':
-                    acts = [('Enter', 'Update')]
+                    acts = [('Enter', 'Update'), ('A', 'Update all')]
                 elif key == 'other':
                     acts = [('Enter', 'Install')]
                 elif installed_now:
@@ -1699,9 +1740,9 @@ def tui(no_color=False):
             put(height - 2, 1, (' ' + ellipsize(ui['msg'], width - 4)) if ui['msg'] else ' ', attr['warn'] if ui['msg'] else dim)
             fill_row(height - 1, attr['foot'])
             full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
-                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('/', 'search'), ('s', 'sort'),
+                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('A', 'update all'), ('/', 'search'), ('s', 'sort'),
                     ('t', 'theme'), ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
-            priority = ['Enter', 'q', 't', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
+            priority = ['Enter', 'q', 'A', 't', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
             keep, used = set(), 0
             for name in priority:
                 label = next(x for x in full if x[0] == name)
@@ -1871,7 +1912,7 @@ def tui(no_color=False):
             ui['view'] = index if index is not None else (ui['view'] + step) % len(SECTIONS)
             ui['sel'] = ui['top'] = 0
             ui['search'] = ''
-            if SECTIONS[ui['view']][0] in ('apps', 'games', 'learning-games', 'beta'):
+            if SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                 load_apps()
 
         load_apps()
@@ -1920,7 +1961,7 @@ def tui(no_color=False):
                 switch(1)
             elif key in (curses.KEY_LEFT, curses.KEY_BTAB, ord('h')):
                 switch(-1)
-            elif ord('1') <= key <= ord('6'):
+            elif ord('1') <= key <= ord('8'):
                 switch(index=key - ord('1'))
             elif key in (10, 13, curses.KEY_ENTER):
                 act()
@@ -1928,11 +1969,14 @@ def tui(no_color=False):
                 do_install()
             elif key == ord('r'):
                 do_run()
+            elif key == ord('A') and SECTIONS[ui['view']][0] == 'updates':
+                outside(lambda: update_all(data['pending']))
+                ui['msg'] = 'Update all finished; '+str(len(data['pending']))+' still pending.'
             elif key == ord('u'):
                 do_update()
             elif key in (ord('t'), ord('T')):
                 toggle_theme(); apply_theme(); ui['msg'] = THEME.title() + ' theme'
-            elif key == ord('s') and SECTIONS[ui['view']][0] in ('apps', 'games', 'learning-games', 'beta'):
+            elif key == ord('s') and SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                 ui['sort'] = (ui['sort'] + 1) % len(SORTS)
                 ui['sel'] = ui['top'] = 0
                 ui['msg'] = 'Sorted: ' + SORTS[ui['sort']][1]
@@ -2045,16 +2089,16 @@ def main(argv=None):
                 if not apps:
                     UI.write('No marked apps found. Each app needs app-store.sh.')
                     continue
-                if any(r.get('category') in ('games','learning-games','beta') for r in apps):
-                    kind = choose('BROWSE', ['Apps', 'Games', 'Learning games', 'Beta (experimental)'])
+                if any(r.get('category') in ('games','games-3d','learning-games','beta') for r in apps):
+                    kind = choose('BROWSE', ['Apps', 'Games', '3D games (inside Games)', 'Learning games', 'Beta (experimental)'])
                     if kind is None:
                         continue
-                    group=('apps','games','learning-games','beta')[kind]
-                    apps = [r for r in apps if (r.get('category','apps') if r.get('category','apps') in ('games','learning-games','beta') else 'apps') == group]
+                    group=('apps','games','games-3d','learning-games','beta')[kind]
+                    apps = [r for r in apps if (r.get('category','apps') if r.get('category','apps') in ('games','games-3d','learning-games','beta') else 'apps') == group]
                     if not apps:
                         UI.write('Nothing in that folder yet.')
                         continue
-                    title = ('GITHUB APPS','GAMES','LEARNING GAMES','BETA - experimental apps')[kind]
+                    title = ('GITHUB APPS','GAMES','GAMES / 3D GAMES','LEARNING GAMES','BETA - experimental apps')[kind]
                 else:
                     title = 'GITHUB APPS'
                 selected = choose(title, [r['name'] + ' - ' + (r.get('description') or '') for r in apps])
