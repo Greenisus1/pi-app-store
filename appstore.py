@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.7.0'
+VERSION = '1.7.1'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 THEME = "dark"
@@ -957,6 +957,8 @@ def build_rows(view, apps, state, pending, software=None):
             rows.append({'name': name, 'status': status, 'desc': 'version ' + (item.get('version') or 'legacy'),
                          'repo': None, 'installed': ok})
     elif view == 'updates':
+        if pending:
+            rows.append({'name':'Update all', 'status':str(len(pending))+' pending', 'desc':'Review and update all pending items. Failed/cancelled updates stay pending.', 'repo':None, 'installed':False, 'action':'update-all'})
         for label, name, commit, source in pending:
             rows.append({'name': label, 'status': 'update available', 'desc': 'commit ' + commit[:12],
                          'repo': None, 'installed': True, 'pending': (label, name, commit, source)})
@@ -970,6 +972,34 @@ def build_rows(view, apps, state, pending, software=None):
             rows.append({'name': name + ' (upstream edits)', 'status': 'source edit ' + latest.get('commit', '')[:10],
                          'desc': latest.get('summary', ''), 'repo': None, 'installed': False})
     return rows
+
+
+def uninstall_app(name, confirm=None):
+    """Remove only a reviewed Store checkout; no package purge or external data deletion."""
+    state = load_state()
+    if name not in state:
+        raise ValueError('Select an installed Store app to uninstall.')
+    if not can_install():
+        raise ValueError(NEED_SUDO)
+    rawpath = Path(state[name]['directory'])
+    if rawpath.is_symlink():
+        raise ValueError('Refusing a linked app directory.')
+    directory = installed_directory(state[name])
+    question = 'Uninstall '+name+'? Delete its Store checkout at '+str(directory)+'. Files created outside it and system packages are kept.'
+    if not (confirm(question) if confirm else ask(question)):
+        return False
+    backup = directory.with_name('.uninstall-'+directory.name+'-'+str(os.getpid()))
+    if backup.exists():
+        raise ValueError('Uninstall recovery directory already exists; files left unchanged.')
+    directory.rename(backup)
+    del state[name]
+    try:
+        save_state(state)
+    except Exception:
+        backup.rename(directory)
+        raise
+    shutil.rmtree(backup)
+    return True
 
 
 def terminal_command(directory):
@@ -1147,7 +1177,7 @@ def gui():
     bar.pack(fill='x', padx=14, pady=(0, 8))
     btn = {}
     for key, text, style_name in (('install', 'Install', 'Accent.TButton'), ('run', 'Run', 'Accent.TButton'),
-                                  ('term', 'Run in terminal', 'TButton'), ('update', 'Update', 'Accent.TButton'), ('all', 'Update all', 'Accent.TButton')):
+                                  ('term', 'Run in terminal', 'TButton'), ('update', 'Update', 'Accent.TButton'), ('all', 'Update all', 'Accent.TButton'), ('uninstall','Uninstall','TButton')):
         btn[key] = ttk.Button(bar, text=text, style=style_name, state='disabled')
         btn[key].pack(side='left', padx=(0, 8))
     status = tk.Label(root, text='', bg='#e6e8ec', fg='#333', anchor='w', padx=10)
@@ -1263,8 +1293,11 @@ def gui():
             btn['install'].state(['!disabled'])
         if row['installed'] and view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed') and row['name'] in load_state():
             btn['run'].state(['!disabled'])
+            btn['uninstall'].state(['!disabled'])
             if terminal_command(Path('.')):
                 btn['term'].state(['!disabled'])
+        if view == 'updates' and row.get('pending') and row['pending'][1] in load_state():
+            btn['uninstall'].state(['!disabled'])
         if view == 'updates' or 'update available' in row['status']:
             btn['update'].state(['!disabled'])
 
@@ -1380,6 +1413,8 @@ def gui():
         row = selected()
         if not row:
             return
+        if row.get('action')=='update-all':
+            do_update_all(); return
         if not can_install():
             say(NEED_SUDO)
             return
@@ -1404,6 +1439,15 @@ def gui():
             done_with('Update all stopped: '+error if error else 'Update all finished. '+str(sum(r[1] for r in result))+' updated; '+str(len(data['pending']))+' still pending. Restart if Store changed.')
             fill()
         background(lambda: update_all(data['pending'], confirm), finish, 'Updating all... per-app reviews still apply')
+    def do_uninstall():
+        row=selected()
+        if not row or row.get('action') or row.get('software'): return
+        def finish(result,error):
+            done_with('Uninstall stopped: '+error if error else 'Uninstalled.' if result else 'Uninstall cancelled.')
+            if result: data['pending'][:]=[p for p in data['pending'] if p[1]!=(row['pending'][1] if row.get('pending') else row['name'])]
+            fill()
+        background(lambda:uninstall_app(row['pending'][1] if row.get('pending') else row['name'],confirm),finish,'Uninstall review...')
+    btn['uninstall'].config(command=do_uninstall)
     btn['all'].config(command=do_update_all)
     btn['install'].config(command=do_install)
     btn['run'].config(command=do_run)
@@ -1411,7 +1455,7 @@ def gui():
     btn['update'].config(command=do_update)
     tree.bind('<<TreeviewSelect>>', update_buttons)
     tree.bind('<Double-1>', lambda e: (btn['run'].invoke() if str(btn['run'].cget('state')) != 'disabled'
-                                       else btn['install'].invoke() if str(btn['install'].cget('state')) != 'disabled' else None))
+                                       else btn['install'].invoke() if str(btn['install'].cget('state')) != 'disabled' else btn['update'].invoke() if str(btn['update'].cget('state')) != 'disabled' else None))
     search.trace_add('write', lambda *a: fill())
     gui_theme()
 
@@ -1653,7 +1697,7 @@ def tui(no_color=False):
             put(head_y, x0 + 1, title.upper(), curses.A_BOLD)
             total = f'{len(found)}' if found else ''
             put(head_y, x0 + 2 + len(title), total, dim)
-            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (s)' if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta') else ''
+            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (o)' if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta') else ''
             hint = ('/ ' + ui['search'] + ('_' if ui['typing'] else '')) if (ui['search'] or ui['typing']) else 'press / to search'
             if sort_label:
                 put(head_y, x0 + len(title) + len(total) + 5, sort_label, attr['warn'])
@@ -1729,20 +1773,20 @@ def tui(no_color=False):
                     action_y = box_y + 2
                 installed_now = cur['name'] in load_state()
                 if key == 'updates':
-                    acts = [('Enter', 'Update'), ('A', 'Update all')]
+                    acts = [('Enter', 'Update all')] if cur.get('action')=='update-all' else [('Enter','Update'), ('u','Uninstall'), ('A','Update all')]
                 elif key == 'other':
                     acts = [('Enter', 'Install')]
                 elif installed_now:
-                    acts = [('Enter', 'Run')] + ([('u', 'Update')] if 'update' in cur['status'] else [])
+                    acts = [('Enter', 'Run'), ('u', 'Uninstall')] + ([('U', 'Update')] if 'update' in cur['status'] else [])
                 else:
                     acts = [('Enter', 'Install')]
                 chips(action_y, x0 + 3, acts, attr['chip'], 0)
             put(height - 2, 1, (' ' + ellipsize(ui['msg'], width - 4)) if ui['msg'] else ' ', attr['warn'] if ui['msg'] else dim)
             fill_row(height - 1, attr['foot'])
             full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
-                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'update'), ('A', 'update all'), ('/', 'search'), ('s', 'sort'),
+                    ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'uninstall'), ('U', 'update'), ('A', 'update all'), ('/', 'search'), ('s', 'settings'), ('o', 'sort'),
                     ('t', 'theme'), ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
-            priority = ['Enter', 'q', 'A', 't', '?', 'i', 'r', 'u', '/', 's', full[0][0], full[1][0], 'F5']
+            priority = ['Enter', 'q', 'u', 'U', 's', 'A', 'o', 't', '?', 'i', 'r', '/', full[0][0], full[1][0], 'F5']
             keep, used = set(), 0
             for name in priority:
                 label = next(x for x in full if x[0] == name)
@@ -1753,10 +1797,10 @@ def tui(no_color=False):
             items = [x for x in full if x[0] in keep]
             chips(height - 1, 0, items, attr['footkey'], attr['foot'], gap=1)
             if ui['help']:
-                lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 5)'),
+                lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 8)'),
                          ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
-                         ('u', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
-                         ('s', 'change sort order (Apps and Games)'), ('t', 'toggle light/dark theme'), (',', 'open settings'), ('f', 'guarded flash in Other software'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
+                         ('u', 'uninstall selected Store app (confirmed)'), ('U', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
+                         ('o', 'change sort order (Apps and Games)'), ('s', 'open settings'), ('t', 'toggle light/dark theme'), (',', 'open settings'), ('f', 'guarded flash in Other software'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
                 bw = min(width - 4, 64)
                 bh = len(lines) + 6
                 by = max(1, (height - bh) // 2)
@@ -1899,7 +1943,10 @@ def tui(no_color=False):
             if not row:
                 return
             view = SECTIONS[ui['view']][0]
-            if view == 'updates':
+            if row.get('action')=='update-all':
+                outside(lambda: update_all(data['pending']))
+                ui['msg']='Update all finished.'
+            elif view == 'updates':
                 do_update()
             elif view == 'other':
                 do_install()
@@ -1972,11 +2019,22 @@ def tui(no_color=False):
             elif key == ord('A') and SECTIONS[ui['view']][0] == 'updates':
                 outside(lambda: update_all(data['pending']))
                 ui['msg'] = 'Update all finished; '+str(len(data['pending']))+' still pending.'
-            elif key == ord('u'):
+            elif key == ord('U'):
                 do_update()
+            elif key == ord('u'):
+                row=selected_row()
+                if not row or row.get('action') or row.get('software'):
+                    ui['msg']='Select an installed Store app.'
+                else:
+                    def remove():
+                        name=row['pending'][1] if row.get('pending') else row['name']
+                        if uninstall_app(name):
+                            data['pending'][:]=[p for p in data['pending'] if p[1]!=name]
+                    outside(remove)
+                    ui['msg']='Back from uninstall.'
             elif key in (ord('t'), ord('T')):
                 toggle_theme(); apply_theme(); ui['msg'] = THEME.title() + ' theme'
-            elif key == ord('s') and SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+            elif key == ord('o') and SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                 ui['sort'] = (ui['sort'] + 1) % len(SORTS)
                 ui['sel'] = ui['top'] = 0
                 ui['msg'] = 'Sorted: ' + SORTS[ui['sort']][1]
@@ -1988,7 +2046,7 @@ def tui(no_color=False):
                 check_now()
             elif key == ord('f') and SECTIONS[ui['view']][0] == 'other':
                 outside(flasher_menu)
-            elif key == ord(','):
+            elif key in (ord(','), ord('s')):
                 outside(settings_menu); apply_theme()
             elif key == ord('?'):
                 ui['help'] = True
