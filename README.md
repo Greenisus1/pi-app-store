@@ -61,3 +61,7 @@ Linux mocked security/unit tests and terminal checks are used. Physical Raspberr
 ## Request an app
 
 Suggest an app using the [Pi App Store App Request form](https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform). The link is also in `appstore --help`, or run `appstore --request-app`. A request is a suggestion, not an automatic installation or approval.
+
+## Third-party package apps
+
+`nnn` and `btop` appear alongside the existing Apps; `moon-buggy` appears in Games. They are small package-manager wrappers, not rebranded copies of the upstream projects. Each checks the installed Debian package and executable before apt installation. Apt checks your configured package candidate; the wrappers do not fetch upstream scripts. Use a regular account for interactive tools. Removing the Store checkout leaves the system package installed, and apt manages package updates.
