@@ -57,3 +57,7 @@ The updated `--boot-self-update` and `--login-start` commands are no-ops. Use Se
 ## Limits and tests
 
 Linux mocked security/unit tests and terminal checks are used. Physical Raspberry Pi, actual apt installation and real hardware changes are not covered by those tests. No DietPi core scripts are patched by this repository. The separate DietPi PR is not updated by this release. Licensed under MIT, copyright 2026 Greenisus1. Copies or substantial portions must keep the copyright and permission notice. See LICENSE.
+
+## Request an app
+
+Suggest an app using the [Pi App Store App Request form](https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform). The link is also in `appstore --help`, or run `appstore --request-app`. A request is a suggestion, not an automatic installation or approval.
