@@ -35,7 +35,7 @@ class Tests(unittest.TestCase):
    if url.endswith(a.VERSION_FILE):return b'{"version":"1.0"}'
    return marker
   with tempfile.TemporaryDirectory() as d,patch.object(a,'HOME',Path(d)),patch.object(a,'fetch',side_effect=fetch),patch.object(a,'can_install',return_value=True),patch.object(a.subprocess,'run'):
-   a.install({'name':'Demo','default_branch':'main'});self.assertEqual(a.load_state()['Demo']['commit'],SHA)
+   a.install({'name':'Demo','default_branch':'main'},confirm=lambda text:True);self.assertEqual(a.load_state()['Demo']['commit'],SHA)
   self.assertTrue(any('codeload.github.com' in x for x in urls))
  def test_invalid_commit_no_download(self):
   with patch.object(a,'can_install',return_value=True),patch.object(a,'fetch') as f:
