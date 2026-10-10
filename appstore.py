@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.8.1'
+VERSION = '1.8.2'
 VERSION_FILE = 'app-version.json'
 APP_REQUEST_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform'
 OFFLINE = False
@@ -833,7 +833,7 @@ def other():
         UI.write('Installing software needs internet. Restart without --offline.')
         return
     name, recipe = SOFTWARE[choice]
-    install_software(name, recipe, lambda text, question: ask(question))
+    install_software(name, recipe, lambda text: ask(text))
 
 
 def check_updates(report=True):
@@ -1954,7 +1954,7 @@ def tui(no_color=False):
                 if not can_install():
                     ui['msg'] = NEED_SUDO
                     return
-                outside(lambda: install_software(name, recipe, lambda text, question: ask(question)))
+                outside(lambda: install_software(name, recipe, lambda text: ask(text)))
                 return
             if not row.get('repo') or OFFLINE:
                 ui['msg'] = 'Open Apps or Games and pick an app to install.' if not OFFLINE else 'Installing needs internet.'
