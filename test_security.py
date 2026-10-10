@@ -57,4 +57,7 @@ class Security(unittest.TestCase):
   def fetch(url,limit=0):return buf.getvalue() if 'codeload' in url else marker
   with tempfile.TemporaryDirectory() as d,patch.object(a,'HOME',Path(d)),patch.object(a,'can_install',return_value=True),patch.object(a,'remote_version',return_value='1'),patch.object(a,'fetch',side_effect=fetch),patch.object(a.subprocess,'run') as r:
    self.assertFalse(a.install({'name':'demo','default_branch':'main'},'a'*40,lambda _:False));r.assert_not_called();self.assertEqual(a.load_state(),{});self.assertFalse((Path(d)/'apps').exists())
+ def test_request_link_without_network_or_config(self):
+  with patch.object(a,'preferences') as config,patch.object(a,'fetch') as network,patch('sys.stdout',new_callable=io.StringIO) as output:
+   self.assertEqual(a.main(['--request-app']),0);self.assertIn(a.APP_REQUEST_URL,output.getvalue());config.assert_not_called();network.assert_not_called()
 if __name__=='__main__':unittest.main()
