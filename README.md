@@ -56,4 +56,4 @@ The updated `--boot-self-update` and `--login-start` commands are no-ops. Use Se
 
 ## Limits and tests
 
-Linux mocked security/unit tests and terminal checks are used. Physical Raspberry Pi, actual apt installation and real hardware changes are not covered by those tests. No DietPi core scripts are patched by this repository. The separate DietPi PR is not updated by this release. License choice is still pending; no open-source license grant is claimed until the owner chooses one.
+Linux mocked security/unit tests and terminal checks are used. Physical Raspberry Pi, actual apt installation and real hardware changes are not covered by those tests. No DietPi core scripts are patched by this repository. The separate DietPi PR is not updated by this release. Licensed under MIT, copyright 2026 Greenisus1. Copies or substantial portions must keep the copyright and permission notice. See LICENSE.
