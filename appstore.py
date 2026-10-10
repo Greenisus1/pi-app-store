@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.7.1'
+VERSION = '1.8.0'
 VERSION_FILE = 'app-version.json'
 OFFLINE = False
 THEME = "dark"
@@ -36,7 +36,7 @@ NETWORK_TIMEOUT = 5
 HOME = Path.home() / '.local' / 'share' / 'pi-app-store'
 # Add another apt entry here: ('Display name', ['apt', 'package', ...]).
 SOFTWARE = [('Python 3', ['apt', 'python3', 'python3-pip', 'python3-venv']),
-            ('Ollama', ['script', 'https://ollama.com/install.sh']),
+            ('Ollama (manual install only)', ['disabled']),
             ('Python Tk (python3-tk)', ['apt', 'python3-tk']),
             ('Pi Imager CLI (rpi-imager)', ['apt', 'rpi-imager']),
             ('Recursive package dependencies (apt-rdepends)', ['apt', 'apt-rdepends']),
@@ -109,14 +109,7 @@ def install_hook(home,program,enable):
 
 
 def login_start():
-    data = preferences()
-    state = load_state()
-    for name in data["autorun"]:
-        if name not in state:
-            print("Auto-run skipped missing app:", name)
-            continue
-        directory = installed_directory(state[name])
-        subprocess.run(["bash", MARKER, "run"], cwd=directory)
+    print('Login auto-run disabled for security. Open Installed apps to run an app.')
 
 
 NAME='pi-app-store-self-update.service'
@@ -129,6 +122,7 @@ def boot_unit(program,home,user):
     return '[Unit]\nDescription=Pi App Store self-update (opt-in)\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nUser='+user+'\nEnvironment="HOME='+str(home)+'"\nExecStart=/usr/bin/python3 "'+str(program)+'" --boot-self-update\nTimeoutStartSec=90\nNoNewPrivileges=true\n\n[Install]\nWantedBy=multi-user.target\n'
 
 def boot_set_enabled(enabled, program, home, run=subprocess.run):
+    if enabled: raise ValueError('Automatic boot updates are disabled.')
     if os.geteuid() != 0: raise ValueError('Boot update setup requires root.')
     path = Path('/etc/systemd/system') / NAME
     marker = 'Pi App Store self-update (opt-in)'
@@ -201,37 +195,19 @@ def flasher_menu():
     except (OSError,ValueError,subprocess.SubprocessError) as exc:print('Flashing stopped:',exc)
 
 def configure_boot_update(enabled):
-    old_enabled = preferences()['update_on_boot']
-    boot_set_enabled(enabled, Path(__file__), Path.home())
-    try:
-        set_preference('update_on_boot', enabled)
-    except Exception:
-        boot_set_enabled(old_enabled, Path(__file__), Path.home())
-        raise
+    if enabled:
+        raise ValueError('Boot self-update is disabled for security. Use reviewed manual updates.')
+    boot_set_enabled(False, Path(__file__), Path.home())
+    set_preference('update_on_boot', False)
 
 
 def boot_self_update():
-    if not preferences()['update_on_boot']:
-        print('Boot self-update disabled.'); return 0
-    repo = repository_metadata(OWNER, 'pi-app-store')
-    commit = latest_commit(OWNER, 'pi-app-store', repo['default_branch'])['sha']
-    source = fetch(raw('pi-app-store', commit, 'appstore.py'))
-    compile(source, 'appstore.py', 'exec')
-    target = Path(__file__).resolve()
-    if source == target.read_bytes():
-        print('Store is current.'); return 0
-    fd, tmp = tempfile.mkstemp(prefix='.boot-update-', dir=target.parent)
-    try:
-        with os.fdopen(fd, 'wb') as stream: stream.write(source)
-        os.chmod(tmp, target.stat().st_mode & 0o777)
-        os.replace(tmp, target)
-    finally:
-        try: os.unlink(tmp)
-        except FileNotFoundError: pass
-    print('Store program updated. No installed app or package changed.'); return 0
+    print('Automatic boot self-update removed. Use a manually verified pinned update in Updates.')
+    return 0
 
 
 def configure_login_apps(selected):
+    if selected: raise ValueError("Login auto-run is disabled. Clear the selection to remove the old hook.")
     home = Path.home()
     profile = next((home/n for n in ('.bash_profile', '.bash_login', '.profile') if (home/n).exists() or (home/n).is_symlink()), home/'.profile')
     existed = profile.exists()
@@ -254,14 +230,14 @@ def settings_menu():
     global THEME
     while True:
         data = preferences()
-        print('\nSETTINGS\n1 Theme: ' + THEME + '\n2 Store self-update at OS boot: ' + ('on' if data['update_on_boot'] else 'off') + '\n3 Auto-run at terminal login: ' + (', '.join(data['autorun']) or 'off') + '\n0 Back')
+        print('\nSETTINGS\n1 Theme: ' + THEME + '\n2 Legacy boot update cleanup (automatic updates disabled): ' + ('on' if data['update_on_boot'] else 'off') + '\n3 Legacy login hook cleanup (auto-run disabled): ' + (', '.join(data['autorun']) or 'off') + '\n0 Back')
         choice = input('Choice: ').strip()
         if choice == '0': return
         if choice == '1':
             THEME = 'light' if THEME == 'dark' else 'dark'
             set_preference('theme', THEME)
         elif choice == '2':
-            enabled = not data['update_on_boot']
+            enabled = False
             if ask(('Enable' if enabled else 'Disable') + ' Store-only automatic code update at boot? Requires root, contacts GitHub, changes own marked systemd service. No installed-app or package updates. It will not run now.'):
                 configure_boot_update(enabled)
         elif choice == '3':
@@ -474,6 +450,7 @@ def state_path():
 
 def load_state():
     try:
+        if state_path().is_symlink(): raise ValueError('Linked installed state refused.')
         value = json.loads(state_path().read_text())
         if not isinstance(value, dict):
             raise ValueError('Invalid installed list')
@@ -523,6 +500,28 @@ def extract(data, dest):
                 raise ValueError('Archive contains a link or special file')
 
 
+def installer_review(stage, name, commit):
+    lines = ['UNREVIEWED THIRD-PARTY CODE. This is not a sandbox or a signature.',
+             'Repository: '+OWNER+'/'+name, 'Pinned commit: '+commit,
+             'Exact root command: bash app-store.sh install',
+             'The files below are the complete checkout to be executed. Downloaded code or',
+             'external commands may do more than these sources show. Cancel if unsure.']
+    size = 0
+    for path in sorted(stage.rglob('*')):
+        if not path.is_file(): continue
+        data = path.read_bytes(); size += len(data)
+        if size > 2_000_000:
+            raise ValueError('Checkout too large for complete code review. Install manually after independent review.')
+        lines.append('\nFILE '+str(path.relative_to(stage))+' SHA256 '+hashlib.sha256(data).hexdigest())
+        try: text = data.decode('utf-8')
+        except UnicodeError:
+            raise ValueError('Binary checkout content cannot be reviewed here. Install manually after independent review.')
+        # Escape control bytes so source cannot spoof the review terminal.
+        lines.extend(''.join(c if c.isprintable() or c=='\t' else repr(c)[1:-1] for c in line)
+                     for line in text.splitlines())
+    return '\n'.join(lines)+'\n\nRun the command as root only after reviewing all files?'
+
+
 NEED_SUDO = 'Installing needs root. Quit and rerun with: sudo appstore'
 
 
@@ -531,16 +530,28 @@ def can_install():
     return os.geteuid() == 0
 
 
+def require_safe_store_home():
+    root = HOME.absolute()
+    for path in [root] + list(root.parents):
+        if path.exists():
+            info = path.lstat()
+            if path.is_symlink() or info.st_uid not in (0, os.geteuid()) or (info.st_mode & 0o022 and not info.st_mode & 0o1000):
+                raise ValueError('Store path is linked, writable by another account, or not owned by current user: '+str(path))
+
+
 def install(repo, selected_commit=None, confirm=None):
     if not can_install():
         print(NEED_SUDO)
         return
+    require_safe_store_home()
     name = repo['name']
+    if name == 'pi-app-store':
+        raise ValueError('Use manually hash-pinned Store updates, not the app installer path.')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..'):
         raise ValueError('Invalid repository name')
     if repo.get('category')=='beta':
         notice='Install experimental Beta app '+name+'? Review its README limitations first. Code runs as root; may be incomplete or unstable.'
-        if not (confirm(notice,'Install Beta app?') if confirm else ask(notice)):return False
+        if not (confirm(notice) if confirm else ask(notice)):return False
     branch = urllib.parse.quote(repo['default_branch'], safe='')
     commit = selected_commit or api(f'repos/{OWNER}/{name}/commits/{branch}')['sha']
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
@@ -548,7 +559,7 @@ def install(repo, selected_commit=None, confirm=None):
     previous = load_state().get(name)
     if previous and previous.get('commit') == commit and Path(previous['directory']).is_dir():
         print('This commit is already installed. Open Installed apps to launch it.')
-        return
+        return True
     marker = fetch(raw(name, commit), 16_384)
     if not valid_marker(marker):
         raise ValueError('Missing valid app marker at chosen commit')
@@ -564,7 +575,11 @@ def install(repo, selected_commit=None, confirm=None):
                       40_000_000), stage)
         if (stage / MARKER).read_bytes() != marker:
             raise ValueError('Installer mismatch')
+        review = installer_review(stage, name, commit)
+        if not review_confirm(review, confirm): return False
         final = HOME / 'apps' / name / commit
+        for location in [HOME / 'apps', HOME / 'apps' / name, final]:
+            if location.is_symlink(): raise ValueError('Linked checkout path refused.')
         final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():
             shutil.rmtree(final)
@@ -579,6 +594,7 @@ def install(repo, selected_commit=None, confirm=None):
                    'branch': repo['default_branch']}
     save_state(state)
     print('Installed. Open Installed apps to launch it.')
+    return True
 
 
 def plain(value):
@@ -630,6 +646,7 @@ def choose(title, rows):
 
 
 def installed_directory(item):
+    require_safe_store_home()
     directory = Path(item['directory']).resolve()
     root = (HOME / 'apps').resolve()
     if directory == root or not directory.is_relative_to(root):
@@ -785,22 +802,19 @@ def software_status(name):
     return 'unknown'
 
 
+def review_confirm(text, confirm=None):
+    return bool(confirm(text) if confirm else ask(text))
+
+
 def install_software(name, recipe, confirm=None):
     if not can_install():
-        print(NEED_SUDO)
-        return False
-    if recipe[0] == 'apt':
-        print('Installing with apt: ' + ', '.join(recipe[1:]))
-        subprocess.run(['apt-get', 'update'], check=True)
-        subprocess.run(['apt-get', 'install', '-y'] + recipe[1:], check=True)
-        return True
-    print('Running the official installer: ' + recipe[1])
-    if not shutil.which('wget'):
-        raise ValueError('Install wget first')
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / 'install.sh'
-        subprocess.run(['wget', '-O', str(path), recipe[1]], check=True)
-        subprocess.run(['sh', str(path)], check=True)
+        print(NEED_SUDO); return False
+    if not recipe or recipe[0] != 'apt':
+        raise ValueError('Downloaded installers are disabled. Review and install from upstream yourself.')
+    commands = [['apt-get', 'update'], ['apt-get', 'install', '-y'] + recipe[1:]]
+    text = 'Install '+plain(name)+' as root?\n' + '\n'.join(shlex.join(cmd) for cmd in commands)
+    if not review_confirm(text, confirm): return False
+    for cmd in commands: subprocess.run(cmd, check=True)
     return True
 
 
@@ -906,18 +920,9 @@ def updates(pending):
     choice -= 1
     label, name, commit, source = pending[choice]
     if source is not None:
-        print('Update source: ' + raw(name, commit, 'appstore.py'))
-        if not can_install():
-            print(NEED_SUDO)
-            return
-        print('This replaces the App Store program. Restart with AppStore afterward.')
-        compile(source, 'appstore.py', 'exec')
-        target = Path(__file__).resolve()
-        tmp = target.with_suffix('.update.tmp')
-        tmp.write_bytes(source)
-        os.replace(tmp, target)
-        print('App Store updated. Quit and run AppStore again.')
-        pending.pop(choice)
+        if apply_update(pending[choice]):
+            print('App Store updated. Quit and restart appstore.')
+            pending.pop(choice)
     else:
         repo = api(f'repos/{OWNER}/{name}')
         install(repo, selected_commit=commit)
@@ -1013,17 +1018,52 @@ def terminal_command(directory):
     return None
 
 
+def installer_source_review(source):
+    return '\n'.join(plain(line) for line in source.decode('utf-8').splitlines())
+
+
+def trust_store_update(commit, digest):
+    if not re.fullmatch(r'[0-9a-f]{40}', commit) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('Supply exact commit and SHA256.')
+    if not ask('Trust Store update commit '+commit+' with SHA256 '+digest+'? Obtain the hash independently from a maintainer you trust. A hash from the same untrusted download is not a signature.'):
+        return False
+    HOME.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.pin-', dir=HOME)
+    try:
+        with os.fdopen(fd, 'w') as stream: json.dump({'commit': commit, 'sha256': digest}, stream)
+        os.chmod(tmp, 0o600); os.replace(tmp, HOME / 'store-update-pin.json')
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+    return True
+
+
 def apply_update(row, confirm=None):
     label, name, commit, source = row
     if not can_install():
         print(NEED_SUDO)
         return False
     if source is not None:
+        if not re.fullmatch(r'[0-9a-f]{40}', commit): raise ValueError('Invalid pinned commit.')
+        require_safe_store_home()
+        if (HOME / 'store-update-pin.json').is_symlink(): raise ValueError('Linked update pin refused.')
+        try: pin = json.loads((HOME / 'store-update-pin.json').read_text())
+        except (OSError, ValueError):
+            raise ValueError('No trusted Store update pin. Use --trust-store-update COMMIT SHA256 after independent verification.')
+        digest = hashlib.sha256(source).hexdigest()
+        if pin.get('commit') != commit or pin.get('sha256') != digest:
+            raise ValueError('Store update differs from trusted commit/hash. Nothing replaced.')
         compile(source, 'appstore.py', 'exec')
+        if not review_confirm('Replace Store program with pinned commit '+commit+'?\nSHA256 '+digest+'\n'+installer_source_review(source), confirm): return False
         target = Path(__file__).resolve()
-        tmp = target.with_suffix('.update.tmp')
-        tmp.write_bytes(source)
-        os.replace(tmp, target)
+        fd, tmp = tempfile.mkstemp(prefix='.reviewed-update-', dir=target.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream: stream.write(source)
+            os.chmod(tmp, target.stat().st_mode & 0o777)
+            os.replace(tmp, target)
+        finally:
+            try: os.unlink(tmp)
+            except FileNotFoundError: pass
         return True
     install(api(f'repos/{OWNER}/{name}'), selected_commit=commit, confirm=confirm)
     return load_state().get(name, {}).get('commit') == commit
@@ -1125,6 +1165,9 @@ def gui():
         box = tk.Text(frame, height=12, wrap='word', font=('TkFixedFont', 9), bg='white')
         box.insert('1.0', plain_text(text))
         box.configure(state='disabled')
+        scrollbar = ttk.Scrollbar(frame, command=box.yview)
+        box.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
         box.pack(fill='both', expand=True, pady=8)
         buttons = ttk.Frame(frame)
         buttons.pack(anchor='e')
@@ -1220,11 +1263,11 @@ def gui():
         def boot_change():
             if not confirm_dialog('Automatic Store update at boot', 'Enable/disable Store-only update at OS boot. Requires root; changes own systemd service. Contacts GitHub and replaces Store program only. Does not run now. No app/package update.'):
                 boot.set(preferences()['update_on_boot']); return
-            try: configure_boot_update(boot.get())
+            try: configure_boot_update(False); boot.set(False)
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 boot.set(preferences()['update_on_boot']); messagebox.showerror('Settings stopped', str(exc), parent=win)
-        ttk.Checkbutton(win, text='Store self-update at OS boot', variable=boot, command=boot_change).pack(pady=10)
-        ttk.Label(win, text='Auto-run at visible terminal LOGIN (not OS boot)').pack()
+        ttk.Checkbutton(win, text='Automatic boot updates disabled (clear legacy setting)', variable=boot, command=boot_change).pack(pady=10)
+        ttk.Label(win, text='Login auto-run disabled. Clear selections to remove old hook.').pack()
         state = load_state(); selected_apps = {}
         canvas = tk.Canvas(win, height=220, highlightthickness=0, bg='#f4f5f7' if THEME == 'light' else '#101a25')
         scroll = ttk.Scrollbar(win, orient='vertical', command=canvas.yview)
@@ -2057,6 +2100,7 @@ def tui(no_color=False):
 def main(argv=None):
     global OFFLINE, UI, THEME
     parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps')
+    parser.add_argument('--trust-store-update', nargs=2, metavar=('COMMIT', 'SHA256'), help='save independently verified update pin after explicit review')
     parser.add_argument('--offline', action='store_true', help='run installed apps without network checks')
     parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
     parser.add_argument('--plain', action='store_true', help='use the plain numbered menu')
@@ -2066,6 +2110,7 @@ def main(argv=None):
     parser.add_argument('--login-start', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--version', action='version', version='Pi App Store ' + VERSION)
     args = parser.parse_args(argv)
+    if args.trust_store_update: return 0 if trust_store_update(*args.trust_store_update) else 1
     if args.boot_self_update: return boot_self_update()
     if args.login_start:
         if sys.stdin.isatty() and sys.stdout.isatty(): login_start()
