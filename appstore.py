@@ -28,8 +28,9 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.8.0'
+VERSION = '1.8.1'
 VERSION_FILE = 'app-version.json'
+APP_REQUEST_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform'
 OFFLINE = False
 THEME = "dark"
 NETWORK_TIMEOUT = 5
@@ -2099,8 +2100,9 @@ def tui(no_color=False):
 
 def main(argv=None):
     global OFFLINE, UI, THEME
-    parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps')
+    parser = argparse.ArgumentParser(description='Pi App Store - install and run your GitHub apps', epilog='Request an app: ' + APP_REQUEST_URL)
     parser.add_argument('--trust-store-update', nargs=2, metavar=('COMMIT', 'SHA256'), help='save independently verified update pin after explicit review')
+    parser.add_argument('--request-app', action='store_true', help='show the app request form link')
     parser.add_argument('--offline', action='store_true', help='run installed apps without network checks')
     parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
     parser.add_argument('--plain', action='store_true', help='use the plain numbered menu')
@@ -2110,6 +2112,9 @@ def main(argv=None):
     parser.add_argument('--login-start', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--version', action='version', version='Pi App Store ' + VERSION)
     args = parser.parse_args(argv)
+    if args.request_app:
+        print('Request an app: ' + APP_REQUEST_URL)
+        return 0
     if args.trust_store_update: return 0 if trust_store_update(*args.trust_store_update) else 1
     if args.boot_self_update: return boot_self_update()
     if args.login_start:
