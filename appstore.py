@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.8.2'
+VERSION = '1.8.4'
 VERSION_FILE = 'app-version.json'
 APP_REQUEST_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform'
 OFFLINE = False
@@ -685,6 +685,10 @@ def installed():
             run_tool(tools[choice - len(names)][1])
             continue
         name = names[choice]
+        UI.write(f'  R  Run {name}')
+        UI.write('  0  Back', '2')
+        if input('Choice: ').strip().lower() != 'r':
+            continue
         try:
             directory = installed_directory(state[name])
             UI.heading('RUNNING ' + name, 'Exit the app to return here. No download needed.')
@@ -908,17 +912,34 @@ def report_updates(pending):
 
 
 def updates(pending):
-    if not pending:
-        return
-    if not pending:
-        return
-    choice = choose('Updates', ['Update all'] + [row[0] for row in pending])
-    if choice is None:
-        return
-    if choice == 0:
-        update_all(pending)
-        return
-    choice -= 1
+    while True:
+        rows = (['Update all'] + [row[0] for row in pending]) if pending else []
+        UI.heading('Updates')
+        for index, text in enumerate(rows, 1):
+            UI.write(f'  {index:>2}  {text}')
+        if not rows:
+            UI.write('  No updates pending right now.')
+        UI.write('  R  Reload the update list')
+        UI.write('   0  Back', '2')
+        value = input('Choose a number: ').strip()
+        if value == '0' or not value:
+            return
+        if value.lower() == 'r':
+            if OFFLINE:
+                UI.write('Offline: cannot reload update checks.', '33')
+                continue
+            UI.write('Reloading update checks...')
+            pending[:] = check_updates(report=False)
+            continue
+        if not value.isascii() or not value.isdigit() or not 1 <= int(value) <= len(rows):
+            UI.write('Choose a listed number, R, or 0.', '33')
+            continue
+        choice = int(value) - 1
+        if choice == 0:
+            update_all(pending)
+            return
+        choice -= 1
+        break
     label, name, commit, source = pending[choice]
     if source is not None:
         if apply_update(pending[choice]):
@@ -1406,6 +1427,8 @@ def gui():
             fill()
             if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and OFFLINE:
                 say('Offline: browsing needs internet. Run apps still works.')
+        if view == 'updates' and not OFFLINE and not data['busy']:
+            start_checks()
 
     nav = {}
     for key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'):
@@ -1516,8 +1539,6 @@ def gui():
 
     pump()
     show('apps')
-    if not OFFLINE:
-        root.after(800, start_checks)
     root.mainloop()
     return 0
 
@@ -1768,7 +1789,7 @@ def tui(no_color=False):
             if not found:
                 empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
                          'updates': 'Everything is up to date.', 'other': 'No recorded checks yet.'}[key]
-                tip = {'apps': 'Press F5 to look again.', 'games': 'New games appear here automatically.', 'games-3d': 'Inside Games: first-person and other 3D games.', 'learning-games':'Learning quizzes and educational games.', 'beta':'Experimental apps. Review limitations before install.',
+                tip = {'apps': 'Press R to look again.', 'games': 'New games appear here automatically.', 'games-3d': 'Inside Games: first-person and other 3D games.', 'learning-games':'Learning quizzes and educational games.', 'beta':'Experimental apps. Review limitations before install.',
                        'installed': 'Open Apps or Games and press Enter on one.', 'updates': 'Updates show up here.',
                        'other': 'Needs internet for the first check.'}[key]
                 if data['busy'] and key in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
@@ -1829,8 +1850,8 @@ def tui(no_color=False):
             fill_row(height - 1, attr['foot'])
             full = [('\u2191\u2193' if utf8 else 'Up/Dn', 'move'), ('\u2190\u2192' if utf8 else 'Lt/Rt', 'section'),
                     ('Enter', 'open'), ('i', 'install'), ('r', 'run'), ('u', 'uninstall'), ('U', 'update'), ('A', 'update all'), ('/', 'search'), ('s', 'settings'), ('o', 'sort'),
-                    ('t', 'theme'), ('F5', 'refresh'), ('?', 'help'), ('q', 'quit')]
-            priority = ['Enter', 'q', 'u', 'U', 's', 'A', 'o', 't', '?', 'i', 'r', '/', full[0][0], full[1][0], 'F5']
+                    ('t', 'theme'), ('R', 'reload'), ('?', 'help'), ('q', 'quit')]
+            priority = ['Enter', 'q', 'u', 'U', 'R', 's', 'A', 't', 'o', '?', 'i', 'r', '/', full[0][0], full[1][0]]
             keep, used = set(), 0
             for name in priority:
                 label = next(x for x in full if x[0] == name)
@@ -1844,7 +1865,7 @@ def tui(no_color=False):
                 lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 8)'),
                          ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
                          ('u', 'uninstall selected Store app (confirmed)'), ('U', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
-                         ('o', 'change sort order (Apps and Games)'), ('s', 'open settings'), ('t', 'toggle light/dark theme'), (',', 'open settings'), ('f', 'guarded flash in Other software'), ('F5', 'look for apps and updates again'), ('q', 'quit')]
+                         ('o', 'change sort order (Apps and Games)'), ('s', 'open settings'), ('t', 'toggle light/dark theme'), (',', 'open settings'), ('f', 'guarded flash in Other software'), ('R or F5', 'reload apps and look for updates again'), ('q', 'quit')]
                 bw = min(width - 4, 64)
                 bh = len(lines) + 6
                 by = max(1, (height - bh) // 2)
@@ -1999,23 +2020,27 @@ def tui(no_color=False):
             else:
                 do_install()
 
+        updates_wanted = False
+
         def switch(step=None, index=None):
+            nonlocal updates_wanted
             ui['view'] = index if index is not None else (ui['view'] + step) % len(SECTIONS)
             ui['sel'] = ui['top'] = 0
             ui['search'] = ''
             if SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
                 load_apps()
+            if SECTIONS[ui['view']][0] == 'updates' and not OFFLINE:
+                updates_wanted = True
 
         load_apps()
-        check_now_started = False
         while True:
             while True:
                 try:
                     jobs.get_nowait()()
                 except queue.Empty:
                     break
-            if not check_now_started and data['loaded'] is not None and not data['busy']:
-                check_now_started = True
+            if updates_wanted and not data['busy']:
+                updates_wanted = False
                 check_now()
             draw()
             key = stdscr.getch()
@@ -2136,28 +2161,10 @@ def main(argv=None):
     if args.no_color:
         UI.color = False
     pending = []
-    # Daemon worker lets Run apps and Quit work immediately, even without internet.
-    done = threading.Event()
-    def background_check():
-        try:
-            pending.extend(check_updates(report=False))
-            check_software_changes()
-        finally:
-            done.set()
-    if OFFLINE:
-        done.set()
-    else:
-        threading.Thread(target=background_check, daemon=True).start()
     while True:
         UI.heading('PI APP STORE  /  ' + VERSION, 'Your GitHub apps. One place to install and run.')
         if OFFLINE:
             UI.write('OFFLINE  -  installed apps still work', '33')
-        elif not done.is_set():
-            UI.write('Checking updates in the background...', '2')
-        elif CHECK_ERRORS:
-            UI.write('Some update checks failed. Open Updates for details.', '33')
-        else:
-            UI.write(f'{len(pending)} update(s) available. Nothing changes automatically.', '2')
         UI.write()
         for line in ('  1  GitHub apps     Browse and install',
                      '  2  Run apps        Launch installed apps',
@@ -2217,12 +2224,14 @@ def main(argv=None):
             elif choice == '3':
                 other()
             elif choice == '4':
-                if not done.is_set():
-                    UI.write('Checks are still running. Run apps is available now.')
+                if OFFLINE:
+                    report_updates(pending)
                     continue
+                UI.write('Checking updates...')
+                pending[:] = check_updates(report=False)
+                check_software_changes()
                 report_updates(pending)
-                if not OFFLINE:
-                    updates(pending)
+                updates(pending)
             else:
                 UI.write('Choose 0, 1, 2, 3 or 4.', '33')
         except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:
