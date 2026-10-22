@@ -296,7 +296,7 @@ class Tests(unittest.TestCase):
         self.assertFalse(app.use_rich(False, {}, True, True))
         self.assertEqual(app.ellipsize('abcdef', 4), 'abc\u2026')
         self.assertEqual(app.ellipsize('ab\x1b[31m', 20).count('\x1b'), 0)
-        self.assertEqual([k for k, _ in app.SECTIONS], ['apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'])
+        self.assertEqual([k for k, _ in app.SECTIONS], ['apps', 'desktop-apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'])
         self.assertEqual(app.read_software_records(), {})
 
 
