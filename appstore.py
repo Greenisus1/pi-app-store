@@ -28,7 +28,7 @@ import urllib.request
 OWNER = 'Greenisus1'
 MARKER = 'app-store.sh'
 SIGNATURE = '# pi-app-store: 1'
-VERSION = '1.8.4'
+VERSION = '1.9.0'
 VERSION_FILE = 'app-version.json'
 APP_REQUEST_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSdTDiZ4kCPN49FF0DOuXw1XkccwWpcI3Fj4TofkIFs6nJXBqA/viewform'
 OFFLINE = False
@@ -956,10 +956,10 @@ def build_rows(view, apps, state, pending, software=None):
     """Pure helper for the window: list rows for one section. No network, no Tk."""
     waiting = {row[1] for row in pending}
     rows = []
-    if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+    if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps'):
         for repo in apps:
             category=repo.get('category','apps')
-            group=category if category in ('games','games-3d','learning-games','beta') else 'apps'
+            group=category if category in ('games','games-3d','learning-games','beta','desktop-apps') else 'apps'
             if group != view:
                 continue
             name = repo['name']
@@ -1352,11 +1352,11 @@ def gui():
             return
         details.config(text=row['name'] + '\n' + row['status'] + (' - ' + row['desc'] if row['desc'] else ''))
         view = data['view']
-        if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and not OFFLINE:
+        if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps') and not OFFLINE:
             btn['install'].state(['!disabled'])
         if view == 'other' and row.get('software') and not OFFLINE:
             btn['install'].state(['!disabled'])
-        if row['installed'] and view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed') and row['name'] in load_state():
+        if row['installed'] and view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps', 'installed') and row['name'] in load_state():
             btn['run'].state(['!disabled'])
             btn['uninstall'].state(['!disabled'])
             if terminal_command(Path('.')):
@@ -1381,7 +1381,7 @@ def gui():
         for index, row in enumerate(rows):
             tree.insert('', 'end', iid=str(index), text='  ' + row['name'], values=(row['status'], row['desc']))
         if not rows:
-            empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
+            empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'desktop-apps':'No desktop apps yet.', 'installed': 'Nothing installed yet.',
                      'updates': 'No updates waiting.', 'other': 'No recorded checks yet.'}[data['view']]
             tree.insert('', 'end', iid='empty', text='  ' + empty)
         update_buttons()
@@ -1404,7 +1404,7 @@ def gui():
         data['busy'] = False
         say(message)
 
-    TITLES = {'apps': 'Apps', 'games': 'Games', 'games-3d': 'Games / 3D games', 'learning-games':'Learning games', 'beta':'Beta', 'installed': 'Run apps', 'other': 'Other software',
+    TITLES = {'apps': 'Apps', 'games': 'Games', 'games-3d': 'Games / 3D games', 'learning-games':'Learning games', 'beta':'Beta', 'desktop-apps':'Desktop apps', 'installed': 'Run apps', 'other': 'Other software',
               'updates': 'Updates'}
 
     def show(view, reload=False):
@@ -1412,7 +1412,7 @@ def gui():
         path_label.config(text='Pi App Store  >  ' + TITLES[view])
         for key, button in nav.items():
             button.config(bg=ACCENT if key == view else ('#f4f5f7' if THEME == 'light' else '#101a25'), fg='#17212c' if THEME == 'light' else '#e3ebed')
-        needs_net = view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and (reload or not data['loaded']) and not OFFLINE
+        needs_net = view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps') and (reload or not data['loaded']) and not OFFLINE
         if needs_net:
             def finish(result, error):
                 if error:
@@ -1425,13 +1425,13 @@ def gui():
             background(discover, finish, 'Looking for apps...')
         else:
             fill()
-            if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta') and OFFLINE:
+            if view in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps') and OFFLINE:
                 say('Offline: browsing needs internet. Run apps still works.')
         if view == 'updates' and not OFFLINE and not data['busy']:
             start_checks()
 
     nav = {}
-    for key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'installed', 'updates', 'other'):
+    for key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps', 'installed', 'updates', 'other'):
         button = tk.Button(side, text='   ' + TITLES[key], anchor='w', bg=SIDE, fg=SIDE_TXT, activebackground='#3a3f48',
                            activeforeground='white', relief='flat', bd=0, padx=10, pady=9, font=('TkDefaultFont', 10),
                            command=lambda k=key: show(k))
@@ -1556,7 +1556,7 @@ def sort_apps(rows, mode):
     return sorted(by_name, key=lambda r: ((r.get('repo') or {}).get('pushed_at') or (r.get('repo') or {}).get('created_at') or ''), reverse=True)
 
 
-SECTIONS = [('apps', 'Apps'), ('games', 'Games'), ('games-3d', '  3D games'), ('learning-games','Learning games'), ('beta','Beta'), ('installed', 'Run apps'),
+SECTIONS = [('apps', 'Apps'), ('desktop-apps', 'Desktop apps'), ('games', 'Games'), ('games-3d', '  3D games'), ('learning-games','Learning games'), ('beta','Beta'), ('installed', 'Run apps'),
             ('updates', 'Updates'), ('other', 'Other software')]
 
 
@@ -1610,7 +1610,7 @@ def tui(no_color=False):
                      'ok': (curses.COLOR_GREEN, -1), 'warn': (curses.COLOR_YELLOW, -1), 'bad': (curses.COLOR_RED, -1),
                      'foot': (curses.COLOR_BLACK, curses.COLOR_WHITE), 'key': (curses.COLOR_YELLOW, curses.COLOR_BLUE),
                      'apps': (curses.COLOR_CYAN, -1), 'games': (curses.COLOR_MAGENTA, -1),
-                     'games-3d': (curses.COLOR_GREEN,-1), 'learning-games': (curses.COLOR_CYAN,-1), 'beta': (curses.COLOR_MAGENTA,-1), 'installed': (curses.COLOR_GREEN, -1), 'updates': (curses.COLOR_YELLOW, -1),
+                     'games-3d': (curses.COLOR_GREEN,-1), 'learning-games': (curses.COLOR_CYAN,-1), 'beta': (curses.COLOR_MAGENTA,-1), 'desktop-apps': (curses.COLOR_BLUE,-1), 'installed': (curses.COLOR_GREEN, -1), 'updates': (curses.COLOR_YELLOW, -1),
                      'other': (curses.COLOR_BLUE, -1), 'side': (curses.COLOR_WHITE, curses.COLOR_BLACK),
                      'footkey': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'chip': (curses.COLOR_BLACK, curses.COLOR_YELLOW),
                      'pop': (curses.COLOR_WHITE, curses.COLOR_BLUE), 'headdim': (curses.COLOR_WHITE, curses.COLOR_BLUE),
@@ -1667,7 +1667,7 @@ def tui(no_color=False):
             found = build_rows(key, data['apps'], load_state(), data['pending'],
                                data['software'] if key == 'other' else None)
             found = [r for r in found if needle in (r['name'] + ' ' + r['desc']).lower()]
-            if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+            if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps'):
                 found = sort_apps(found, SORTS[ui['sort']][0])
             return found
 
@@ -1693,9 +1693,9 @@ def tui(no_color=False):
 
         def counts():
             state = load_state()
-            apps_n = sum(1 for r in data['apps'] if r.get('category') not in ('games','games-3d','learning-games','beta'))
+            apps_n = sum(1 for r in data['apps'] if r.get('category') not in ('games','games-3d','learning-games','beta','desktop-apps'))
             games_n = sum(1 for r in data['apps'] if r.get('category') == 'games')
-            return {'apps': apps_n if data['loaded'] else None, 'games': games_n if data['loaded'] else None, 'games-3d':sum(1 for r in data['apps'] if r.get('category')=='games-3d') if data['loaded'] else None, 'learning-games':sum(1 for r in data['apps'] if r.get('category')=='learning-games') if data['loaded'] else None, 'beta':sum(1 for r in data['apps'] if r.get('category')=='beta') if data['loaded'] else None,
+            return {'apps': apps_n if data['loaded'] else None, 'games': games_n if data['loaded'] else None, 'games-3d':sum(1 for r in data['apps'] if r.get('category')=='games-3d') if data['loaded'] else None, 'learning-games':sum(1 for r in data['apps'] if r.get('category')=='learning-games') if data['loaded'] else None, 'beta':sum(1 for r in data['apps'] if r.get('category')=='beta') if data['loaded'] else None, 'desktop-apps':sum(1 for r in data['apps'] if r.get('category')=='desktop-apps') if data['loaded'] else None,
                     'installed': len(state), 'updates': len(data['pending']), 'other': len(SOFTWARE)}
 
         def draw():
@@ -1762,7 +1762,7 @@ def tui(no_color=False):
             put(head_y, x0 + 1, title.upper(), curses.A_BOLD)
             total = f'{len(found)}' if found else ''
             put(head_y, x0 + 2 + len(title), total, dim)
-            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (o)' if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta') else ''
+            sort_label = 'Sort: ' + SORTS[ui['sort']][1] + ' (o)' if key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps') else ''
             hint = ('/ ' + ui['search'] + ('_' if ui['typing'] else '')) if (ui['search'] or ui['typing']) else 'press / to search'
             if sort_label:
                 put(head_y, x0 + len(title) + len(total) + 5, sort_label, attr['warn'])
@@ -1787,12 +1787,13 @@ def tui(no_color=False):
             if ui['sel'] >= ui['top'] + body_h:
                 ui['top'] = max(0, ui['sel'] - body_h + 1)
             if not found:
-                empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'installed': 'Nothing installed yet.',
+                empty = {'apps': 'No apps found yet.', 'games': 'No games yet.', 'games-3d': 'No 3D games yet.', 'learning-games':'No learning games yet.', 'beta':'No beta apps yet.', 'desktop-apps':'No desktop apps yet.', 'installed': 'Nothing installed yet.',
                          'updates': 'Everything is up to date.', 'other': 'No recorded checks yet.'}[key]
                 tip = {'apps': 'Press R to look again.', 'games': 'New games appear here automatically.', 'games-3d': 'Inside Games: first-person and other 3D games.', 'learning-games':'Learning quizzes and educational games.', 'beta':'Experimental apps. Review limitations before install.',
+                'desktop-apps':'Apps that give your Pi a desktop, like HomeOS Plus.',
                        'installed': 'Open Apps or Games and press Enter on one.', 'updates': 'Updates show up here.',
                        'other': 'Needs internet for the first check.'}[key]
-                if data['busy'] and key in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+                if data['busy'] and key in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps'):
                     empty, tip = 'Looking for apps...', 'Checking GitHub.'
                 put(body_top + 1, x0 + 3, empty, curses.A_BOLD)
                 put(body_top + 2, x0 + 3, tip, dim)
@@ -1862,7 +1863,7 @@ def tui(no_color=False):
             items = [x for x in full if x[0] in keep]
             chips(height - 1, 0, items, attr['footkey'], attr['foot'], gap=1)
             if ui['help']:
-                lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 8)'),
+                lines = [('Up Down', 'move in the list (or j / k)'), ('Left Right', 'switch section (or Tab, or 1 to 9)'),
                          ('Enter', 'run if installed, install if not'), ('i', 'install'), ('r', 'run an installed app'),
                          ('u', 'uninstall selected Store app (confirmed)'), ('U', 'update the selected item'), ('/', 'search (Enter or Esc to finish)'),
                          ('o', 'change sort order (Apps and Games)'), ('s', 'open settings'), ('t', 'toggle light/dark theme'), (',', 'open settings'), ('f', 'guarded flash in Other software'), ('R or F5', 'reload apps and look for updates again'), ('q', 'quit')]
@@ -2027,7 +2028,7 @@ def tui(no_color=False):
             ui['view'] = index if index is not None else (ui['view'] + step) % len(SECTIONS)
             ui['sel'] = ui['top'] = 0
             ui['search'] = ''
-            if SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+            if SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps'):
                 load_apps()
             if SECTIONS[ui['view']][0] == 'updates' and not OFFLINE:
                 updates_wanted = True
@@ -2077,7 +2078,7 @@ def tui(no_color=False):
                 switch(1)
             elif key in (curses.KEY_LEFT, curses.KEY_BTAB, ord('h')):
                 switch(-1)
-            elif ord('1') <= key <= ord('8'):
+            elif ord('1') <= key <= ord('9'):
                 switch(index=key - ord('1'))
             elif key in (10, 13, curses.KEY_ENTER):
                 act()
@@ -2103,7 +2104,7 @@ def tui(no_color=False):
                     ui['msg']='Back from uninstall.'
             elif key in (ord('t'), ord('T')):
                 toggle_theme(); apply_theme(); ui['msg'] = THEME.title() + ' theme'
-            elif key == ord('o') and SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta'):
+            elif key == ord('o') and SECTIONS[ui['view']][0] in ('apps', 'games', 'games-3d', 'learning-games', 'beta', 'desktop-apps'):
                 ui['sort'] = (ui['sort'] + 1) % len(SORTS)
                 ui['sel'] = ui['top'] = 0
                 ui['msg'] = 'Sorted: ' + SORTS[ui['sort']][1]
@@ -2204,16 +2205,16 @@ def main(argv=None):
                 if not apps:
                     UI.write('No marked apps found. Each app needs app-store.sh.')
                     continue
-                if any(r.get('category') in ('games','games-3d','learning-games','beta') for r in apps):
-                    kind = choose('BROWSE', ['Apps', 'Games', '3D games (inside Games)', 'Learning games', 'Beta (experimental)'])
+                if any(r.get('category') in ('games','games-3d','learning-games','beta','desktop-apps') for r in apps):
+                    kind = choose('BROWSE', ['Apps', 'Desktop apps', 'Games', '3D games (inside Games)', 'Learning games', 'Beta (experimental)'])
                     if kind is None:
                         continue
-                    group=('apps','games','games-3d','learning-games','beta')[kind]
-                    apps = [r for r in apps if (r.get('category','apps') if r.get('category','apps') in ('games','games-3d','learning-games','beta') else 'apps') == group]
+                    group=('apps','desktop-apps','games','games-3d','learning-games','beta')[kind]
+                    apps = [r for r in apps if (r.get('category','apps') if r.get('category','apps') in ('games','games-3d','learning-games','beta','desktop-apps') else 'apps') == group]
                     if not apps:
                         UI.write('Nothing in that folder yet.')
                         continue
-                    title = ('GITHUB APPS','GAMES','GAMES / 3D GAMES','LEARNING GAMES','BETA - experimental apps')[kind]
+                    title = ('GITHUB APPS','DESKTOP APPS','GAMES','GAMES / 3D GAMES','LEARNING GAMES','BETA - experimental apps')[kind]
                 else:
                     title = 'GITHUB APPS'
                 selected = choose(title, [r['name'] + ' - ' + (r.get('description') or '') for r in apps])
